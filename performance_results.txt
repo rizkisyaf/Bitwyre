@@ -1,0 +1,712 @@
+Starting trading bot...
+Exchange URL: wss://stream.binance.com:9443/ws/btcusdt@depth
+Symbol: btcusdt
+Model path: ../model.pt
+Trading bot initialized successfully
+Running in simulation mode for performance testing
+Trading bot started
+Trading thread started
+Performance metrics:
+  Avg tick-to-trade: 0 ns
+  Trades per second: 0
+  Total trades: 0
+  Successful trades: 0
+  Success rate: 0%
+  Position: 0
+  Balance: 0
+WebSocket connection established
+Sending subscription message: {"id":1,"method":"SUBSCRIBE","params":["btcusdt@depth"]}
+Received message from exchange: 
+Message type: unknown
+Processing orderbook update: 
+Received other message type: {"id":1,"result":null}
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 514 bid updates
+Processed 1389 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 34704500 ns
+  Avg tick-to-trade: 34704500 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 317 bid updates
+Processed 350 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 2917833 ns
+  Avg tick-to-trade: 31525833 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 334 bid updates
+Processed 303 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 138250 ns
+  Avg tick-to-trade: 28387074 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 120 bid updates
+Processed 106 ask updates
+Orderbook update processed: 
+  Prediction: 1
+  Tick-to-trade: 143458 ns
+  Avg tick-to-trade: 25562712 ns
+Performance metrics:
+  Avg tick-to-trade: 25562712 ns
+  Trades per second: 4
+  Total trades: 4
+  Successful trades: 4
+  Success rate: 100%
+  Position: 0
+  Balance: -5.55112e-15
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 41 bid updates
+Processed 35 ask updates
+Orderbook update processed: 
+  Prediction: 1
+  Tick-to-trade: 128958 ns
+  Avg tick-to-trade: 23019336 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 104 bid updates
+Processed 79 ask updates
+Orderbook update processed: 
+  Prediction: 1
+  Tick-to-trade: 149209 ns
+  Avg tick-to-trade: 20732323 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 48 bid updates
+Processed 32 ask updates
+Orderbook update processed: 
+  Prediction: 1
+  Tick-to-trade: 163875 ns
+  Avg tick-to-trade: 18675478 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 54 bid updates
+Processed 37 ask updates
+Orderbook update processed: 
+  Prediction: 1
+  Tick-to-trade: 142792 ns
+  Avg tick-to-trade: 16822209 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 109 bid updates
+Processed 97 ask updates
+Orderbook update processed: 
+  Prediction: 1
+  Tick-to-trade: 139875 ns
+  Avg tick-to-trade: 15153975 ns
+Performance metrics:
+  Avg tick-to-trade: 15153975 ns
+  Trades per second: 9
+  Total trades: 9
+  Successful trades: 9
+  Success rate: 100%
+  Position: 0.5
+  Balance: -500
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 67 bid updates
+Processed 72 ask updates
+Orderbook update processed: 
+  Prediction: 1
+  Tick-to-trade: 136708 ns
+  Avg tick-to-trade: 13652248 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 948 bid updates
+Processed 911 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 143167 ns
+  Avg tick-to-trade: 12301339 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 350 bid updates
+Processed 267 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 149167 ns
+  Avg tick-to-trade: 11086121 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 80 bid updates
+Processed 153 ask updates
+Orderbook update processed: 
+  Prediction: 1
+  Tick-to-trade: 137000 ns
+  Avg tick-to-trade: 9991208 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 591 bid updates
+Processed 402 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 142000 ns
+  Avg tick-to-trade: 9006287 ns
+Performance metrics:
+  Avg tick-to-trade: 9006287 ns
+  Trades per second: 14
+  Total trades: 14
+  Successful trades: 13
+  Success rate: 92.8571%
+  Position: 0.6
+  Balance: -600
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 62 bid updates
+Processed 38 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 179458 ns
+  Avg tick-to-trade: 8123604 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 44 bid updates
+Processed 32 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 150292 ns
+  Avg tick-to-trade: 7326272 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 55 bid updates
+Processed 98 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 140000 ns
+  Avg tick-to-trade: 6607644 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 42 bid updates
+Processed 38 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 158292 ns
+  Avg tick-to-trade: 5962708 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 98 bid updates
+Processed 97 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 149416 ns
+  Avg tick-to-trade: 5381378 ns
+Performance metrics:
+  Avg tick-to-trade: 5381378 ns
+  Trades per second: 19
+  Total trades: 19
+  Successful trades: 17
+  Success rate: 89.4737%
+  Position: 0.6
+  Balance: -600
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 253 bid updates
+Processed 314 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 167833 ns
+  Avg tick-to-trade: 4860023 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 56 bid updates
+Processed 215 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 204917 ns
+  Avg tick-to-trade: 4394512 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 30 bid updates
+Processed 30 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 152334 ns
+  Avg tick-to-trade: 3970294 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 15 bid updates
+Processed 30 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 138167 ns
+  Avg tick-to-trade: 3587081 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 21 bid updates
+Processed 44 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 140792 ns
+  Avg tick-to-trade: 3242452 ns
+Performance metrics:
+  Avg tick-to-trade: 3242452 ns
+  Trades per second: 23
+  Total trades: 24
+  Successful trades: 22
+  Success rate: 91.6667%
+  Position: 0.6
+  Balance: -600
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 12 bid updates
+Processed 23 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 139042 ns
+  Avg tick-to-trade: 2932111 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 19 bid updates
+Processed 41 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 144917 ns
+  Avg tick-to-trade: 2653391 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 714 bid updates
+Processed 419 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 212583 ns
+  Avg tick-to-trade: 2409310 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 297 bid updates
+Processed 259 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 146417 ns
+  Avg tick-to-trade: 2183020 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 341 bid updates
+Processed 233 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 162416 ns
+  Avg tick-to-trade: 1980959 ns
+Performance metrics:
+  Avg tick-to-trade: 1980959 ns
+  Trades per second: 29
+  Total trades: 29
+  Successful trades: 26
+  Success rate: 89.6552%
+  Position: 0.5
+  Balance: -500
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 74 bid updates
+Processed 43 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 132500 ns
+  Avg tick-to-trade: 1796113 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 564 bid updates
+Processed 458 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 179958 ns
+  Avg tick-to-trade: 1634497 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 213 bid updates
+Processed 195 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 188041 ns
+  Avg tick-to-trade: 1489851 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 180 bid updates
+Processed 179 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 158291 ns
+  Avg tick-to-trade: 1356695 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 334 bid updates
+Processed 175 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 153125 ns
+  Avg tick-to-trade: 1236338 ns
+Performance metrics:
+  Avg tick-to-trade: 1236338 ns
+  Trades per second: 34
+  Total trades: 34
+  Successful trades: 30
+  Success rate: 88.2353%
+  Position: 0.4
+  Balance: -400
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 119 bid updates
+Processed 99 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 224833 ns
+  Avg tick-to-trade: 1135187 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 54 bid updates
+Processed 46 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 183667 ns
+  Avg tick-to-trade: 1040035 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 327 bid updates
+Processed 315 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 201916 ns
+  Avg tick-to-trade: 956223 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 212 bid updates
+Processed 423 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 187292 ns
+  Avg tick-to-trade: 879329 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 317 bid updates
+Processed 297 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 186083 ns
+  Avg tick-to-trade: 810004 ns
+Performance metrics:
+  Avg tick-to-trade: 810004 ns
+  Trades per second: 39
+  Total trades: 39
+  Successful trades: 35
+  Success rate: 89.7436%
+  Position: 0.4
+  Balance: -400
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 80 bid updates
+Processed 84 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 159083 ns
+  Avg tick-to-trade: 744911 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 54 bid updates
+Processed 78 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 143792 ns
+  Avg tick-to-trade: 684799 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 390 bid updates
+Processed 485 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 152959 ns
+  Avg tick-to-trade: 631615 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 224 bid updates
+Processed 251 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 173375 ns
+  Avg tick-to-trade: 585791 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 199 bid updates
+Processed 159 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 144625 ns
+  Avg tick-to-trade: 541674 ns
+Performance metrics:
+  Avg tick-to-trade: 541674 ns
+  Trades per second: 44
+  Total trades: 44
+  Successful trades: 39
+  Success rate: 88.6364%
+  Position: 0.4
+  Balance: -400
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 41 bid updates
+Processed 35 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 140167 ns
+  Avg tick-to-trade: 501523 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 33 bid updates
+Processed 15 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 142458 ns
+  Avg tick-to-trade: 465616 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 295 bid updates
+Processed 259 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 159875 ns
+  Avg tick-to-trade: 435041 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 49 bid updates
+Processed 34 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 178958 ns
+  Avg tick-to-trade: 409432 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 62 bid updates
+Processed 64 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 165458 ns
+  Avg tick-to-trade: 385034 ns
+Performance metrics:
+  Avg tick-to-trade: 385034 ns
+  Trades per second: 49
+  Total trades: 49
+  Successful trades: 41
+  Success rate: 83.6735%
+  Position: 0.4
+  Balance: -400
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 39 bid updates
+Processed 73 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 144000 ns
+  Avg tick-to-trade: 360930 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 47 bid updates
+Processed 21 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 140250 ns
+  Avg tick-to-trade: 338862 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 63 bid updates
+Processed 30 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 149458 ns
+  Avg tick-to-trade: 319921 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 459 bid updates
+Processed 394 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 153500 ns
+  Avg tick-to-trade: 303278 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 94 bid updates
+Processed 93 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 162959 ns
+  Avg tick-to-trade: 289246 ns
+Performance metrics:
+  Avg tick-to-trade: 289246 ns
+  Trades per second: 54
+  Total trades: 54
+  Successful trades: 46
+  Success rate: 85.1852%
+  Position: 0.2
+  Balance: -200
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 35 bid updates
+Processed 44 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 137375 ns
+  Avg tick-to-trade: 274058 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 135 bid updates
+Processed 150 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 141375 ns
+  Avg tick-to-trade: 260789 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 376 bid updates
+Processed 486 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 143750 ns
+  Avg tick-to-trade: 249085 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 222 bid updates
+Processed 201 ask updates
+Orderbook update processed: 
+  Prediction: nan
+  Tick-to-trade: 142333 ns
+  Avg tick-to-trade: 238409 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 177 bid updates
+Processed 168 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 145125 ns
+  Avg tick-to-trade: 229080 ns
+Received message from exchange: 
+Message type: depthUpdate
+Processing orderbook update: 
+Received orderbook update
+Processed 48 bid updates
+Processed 47 ask updates
+Orderbook update processed: 
+  Prediction: -1
+  Tick-to-trade: 152000 ns
+  Avg tick-to-trade: 221372 ns
+Stopping trading bot...
+Trading thread stopped

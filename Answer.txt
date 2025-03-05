@@ -1,0 +1,46 @@
+# Clay Millennium Problems
+
+What I knew about the Clay Millennium Problems start from Riemann Hypothesis about prime numbers. 
+I was hooked into the topic when I was watching Veritasium's video about the topic.
+The video told us about until today, we dont know how many prime numbers are there between 0 and x. 
+And current known prime numbers found by computer are less than 10^18.
+Triggered by that then I found Clay Millennium Problems, which I then knew as the most challenging problems in Mathematics.
+
+# ECDSA
+
+What I knew about ECDSA is that it is a signature algorithm used in Bitcoin and Ethereum, that's it.
+I lack of knowledge about the mathematics behind it, and how it works.
+But I do know and familiar with the concept of elliptic curves because I've built Solana App,
+that requires me bit knowledge about elliptic curves.
+
+Solana using Ed25119 curve for their wallet address. Solana using two types of curve for their wallet address:
+1. Off-Curve which is public key that is not on the curve and have no private key.
+2. On-Curve which is public key that is on the curve and have valid signature because hold private key.
+
+# Cryptocurrencies
+
+Cryptocurrencies are currencies that using cryptography technology to secure and verify transactions.
+That is why it is called decentralized technology, because it is not rely on any central authority like government or bank.
+And they run above technology called blockchain, which is a distributed ledger technology that is used to record transactions.
+
+# Zero-Knowledge Proofs
+
+Zero-Knowledge Proofs is a protocol that allows one party to prove to another party that they know a secret value, without revealing the secret value itself.
+Small example:
+1. Adit stuck in cave alone and friend Dita is outside the cave
+2. The cave have 2 doors of tunnels, Door A and Door B, and only can open using secret key
+3. Adit know the secret to open the door and wanna prove to Dita that he know the secret
+4. So Adit ask to Dita to shout out any Door A or Door B specifically and Adit will open the door
+5. Dita shout out Door A
+6. Adit open Door A and Dita can see that Adit is telling the truth
+7. Dita shout out Door B
+8. Adit open Door B and Dita can see that Adit is telling the truth
+
+# Why I want to work for STG
+
+I dont want to work, I want to learn everything beyond my scope now as a quant trader that build Zirodelta Terminal.
+And by joining STG, I can learn everything about trading using knowledge beyond my current scope.
+I am dedicated person to learn and improve skill, and I will be totaly work on that.
+My daily activity before this is learn and build, impelemting new knowledge into my terminal.
+But I dont have mentor in this field, so I believe if I can work under your guidance, 
+I can improve a lot and can be best quant trader in your team.
