@@ -84,7 +84,7 @@ def main():
     parser.add_argument('--input_size', type=int, default=23, help='Input size (number of features)')
     parser.add_argument('--hidden_size', type=int, default=64, help='Hidden layer size')
     parser.add_argument('--num_layers', type=int, default=2, help='Number of hidden layers')
-    parser.add_argument('--num_samples', type=int, default=10000, help='Number of synthetic samples to generate')
+    parser.add_argument('--num_samples', type=int, default=100, help='Number of synthetic samples to generate')
     parser.add_argument('--num_epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--output_path', type=str, default='model.pt', help='Path to save the model')
     

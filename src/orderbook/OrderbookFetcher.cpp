@@ -2,42 +2,83 @@
 
 #include <algorithm>
 #include <iostream>
+#include <chrono>
 
 namespace trading {
 
 // Orderbook implementation
 void Orderbook::updateBids(const std::vector<Order>& bids) {
     std::lock_guard<std::mutex> lock(mutex_);
-    bids_ = bids;
+    
+    // Update bids
+    for (const auto& bid : bids) {
+        // If quantity is 0, remove the price level
+        if (bid.quantity == 0.0) {
+            bids_.erase(
+                std::remove_if(bids_.begin(), bids_.end(),
+                    [&bid](const Order& o) { return o.price == bid.price; }),
+                bids_.end()
+            );
+        } else {
+            // Check if price level exists
+            auto it = std::find_if(bids_.begin(), bids_.end(),
+                [&bid](const Order& o) { return o.price == bid.price; });
+            
+            if (it != bids_.end()) {
+                // Update quantity
+                it->quantity = bid.quantity;
+            } else {
+                // Add new price level
+                bids_.push_back(bid);
+            }
+        }
+    }
+    
     // Sort bids in descending order by price
-    std::sort(bids_.begin(), bids_.end(), [](const Order& a, const Order& b) {
-        return a.price > b.price;
-    });
+    std::sort(bids_.begin(), bids_.end(),
+        [](const Order& a, const Order& b) { return a.price > b.price; });
 }
 
 void Orderbook::updateAsks(const std::vector<Order>& asks) {
     std::lock_guard<std::mutex> lock(mutex_);
-    asks_ = asks;
+    
+    // Update asks
+    for (const auto& ask : asks) {
+        // If quantity is 0, remove the price level
+        if (ask.quantity == 0.0) {
+            asks_.erase(
+                std::remove_if(asks_.begin(), asks_.end(),
+                    [&ask](const Order& o) { return o.price == ask.price; }),
+                asks_.end()
+            );
+        } else {
+            // Check if price level exists
+            auto it = std::find_if(asks_.begin(), asks_.end(),
+                [&ask](const Order& o) { return o.price == ask.price; });
+            
+            if (it != asks_.end()) {
+                // Update quantity
+                it->quantity = ask.quantity;
+            } else {
+                // Add new price level
+                asks_.push_back(ask);
+            }
+        }
+    }
+    
     // Sort asks in ascending order by price
-    std::sort(asks_.begin(), asks_.end(), [](const Order& a, const Order& b) {
-        return a.price < b.price;
-    });
+    std::sort(asks_.begin(), asks_.end(),
+        [](const Order& a, const Order& b) { return a.price < b.price; });
 }
 
 double Orderbook::getBestBid() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (bids_.empty()) {
-        return 0.0;
-    }
-    return bids_[0].price;
+    return bids_.empty() ? 0.0 : bids_[0].price;
 }
 
 double Orderbook::getBestAsk() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (asks_.empty()) {
-        return 0.0;
-    }
-    return asks_[0].price;
+    return asks_.empty() ? 0.0 : asks_[0].price;
 }
 
 double Orderbook::getMidPrice() const {
@@ -57,35 +98,81 @@ double Orderbook::getSpread() const {
 }
 
 // OrderbookFetcher implementation
-OrderbookFetcher::OrderbookFetcher() : running_(false) {
+OrderbookFetcher::OrderbookFetcher() {
+    // Pre-allocate memory for bid and ask updates
+    bid_updates_.reserve(INITIAL_ORDERS_CAPACITY);
+    ask_updates_.reserve(INITIAL_ORDERS_CAPACITY);
+    
+    // Initialize WebSocket client
     client_ = std::make_unique<websocket_client>();
     
-    // Set up websocket client
-    client_->clear_access_channels(websocketpp::log::alevel::all);
-    client_->clear_error_channels(websocketpp::log::elevel::all);
+    // Turn off logging
+    client_->set_access_channels(websocketpp::log::alevel::none);
+    client_->set_error_channels(websocketpp::log::elevel::fatal);
     
-    client_->init_asio();
-    
-    // Set TLS handler to accept all certificates (for testing only)
+    // Set up TLS support
     client_->set_tls_init_handler([](websocketpp::connection_hdl) {
-        return websocketpp::lib::make_shared<asio::ssl::context>(asio::ssl::context::sslv23);
+        return websocketpp::lib::make_shared<websocketpp::lib::asio::ssl::context>(
+            websocketpp::lib::asio::ssl::context::tlsv12_client);
     });
     
-    // Register handlers
+    // Initialize ASIO
+    client_->init_asio();
+    
+    // Set up message handlers
     client_->set_message_handler([this](websocketpp::connection_hdl hdl, websocket_client::message_ptr msg) {
-        this->onMessage(client_.get(), hdl, msg);
+        onMessage(client_.get(), hdl, msg);
     });
     
     client_->set_open_handler([this](websocketpp::connection_hdl hdl) {
-        this->onOpen(client_.get(), hdl);
+        onOpen(client_.get(), hdl);
     });
     
     client_->set_close_handler([this](websocketpp::connection_hdl hdl) {
-        this->onClose(client_.get(), hdl);
+        onClose(client_.get(), hdl);
     });
     
     client_->set_fail_handler([this](websocketpp::connection_hdl hdl) {
-        this->onFail(client_.get(), hdl);
+        onFail(client_.get(), hdl);
+    });
+}
+
+OrderbookFetcher::OrderbookFetcher(const std::string& symbol) : symbol_(symbol) {
+    // Pre-allocate memory for bid and ask updates
+    bid_updates_.reserve(INITIAL_ORDERS_CAPACITY);
+    ask_updates_.reserve(INITIAL_ORDERS_CAPACITY);
+    
+    // Initialize WebSocket client
+    client_ = std::make_unique<websocket_client>();
+    
+    // Turn off logging
+    client_->set_access_channels(websocketpp::log::alevel::none);
+    client_->set_error_channels(websocketpp::log::elevel::fatal);
+    
+    // Set up TLS support
+    client_->set_tls_init_handler([](websocketpp::connection_hdl) {
+        return websocketpp::lib::make_shared<websocketpp::lib::asio::ssl::context>(
+            websocketpp::lib::asio::ssl::context::tlsv12_client);
+    });
+    
+    // Initialize ASIO
+    client_->init_asio();
+    
+    // Set up message handlers
+    client_->set_message_handler([this](websocketpp::connection_hdl hdl, websocket_client::message_ptr msg) {
+        onMessage(client_.get(), hdl, msg);
+    });
+    
+    client_->set_open_handler([this](websocketpp::connection_hdl hdl) {
+        onOpen(client_.get(), hdl);
+    });
+    
+    client_->set_close_handler([this](websocketpp::connection_hdl hdl) {
+        onClose(client_.get(), hdl);
+    });
+    
+    client_->set_fail_handler([this](websocketpp::connection_hdl hdl) {
+        onFail(client_.get(), hdl);
     });
 }
 
@@ -95,13 +182,18 @@ OrderbookFetcher::~OrderbookFetcher() {
 
 bool OrderbookFetcher::connect(const std::string& exchange_url, const std::string& symbol) {
     if (running_) {
+        std::cerr << "Already connected" << std::endl;
         return false;
     }
     
     symbol_ = symbol;
     
     try {
-        std::error_code ec;
+        // Start the client's perpetual service
+        client_->start_perpetual();
+        
+        // Create connection
+        websocketpp::lib::error_code ec;
         websocket_client::connection_ptr con = client_->get_connection(exchange_url, ec);
         
         if (ec) {
@@ -109,16 +201,17 @@ bool OrderbookFetcher::connect(const std::string& exchange_url, const std::strin
             return false;
         }
         
-        connection_ = con->get_handle();
+        // Connect
         client_->connect(con);
+        connection_ = con->get_handle();
         
-        // Start the websocket thread
+        // Start websocket thread
         running_ = true;
         websocket_thread_ = std::thread(&OrderbookFetcher::run, this);
         
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Exception: " << e.what() << std::endl;
+        std::cerr << "Error connecting to exchange: " << e.what() << std::endl;
         return false;
     }
 }
@@ -131,23 +224,23 @@ void OrderbookFetcher::disconnect() {
     running_ = false;
     
     try {
-        // Close the websocket connection
-        std::error_code ec;
-        client_->close(connection_, websocketpp::close::status::normal, "Disconnecting", ec);
-        
-        if (ec) {
-            std::cerr << "Error closing connection: " << ec.message() << std::endl;
+        // Close connection
+        if (client_ && connection_.lock()) {
+            client_->close(connection_, websocketpp::close::status::normal, "Disconnecting");
         }
         
-        // Notify the websocket thread to exit
-        cv_.notify_one();
+        // Stop client
+        client_->stop_perpetual();
         
-        // Wait for the websocket thread to exit
+        // Notify thread to exit
+        cv_.notify_all();
+        
+        // Join thread
         if (websocket_thread_.joinable()) {
             websocket_thread_.join();
         }
     } catch (const std::exception& e) {
-        std::cerr << "Exception: " << e.what() << std::endl;
+        std::cerr << "Error disconnecting from exchange: " << e.what() << std::endl;
     }
 }
 
@@ -158,118 +251,107 @@ void OrderbookFetcher::registerCallback(OrderbookCallback callback) {
 
 Orderbook OrderbookFetcher::getLatestOrderbook() const {
     std::lock_guard<std::mutex> lock(orderbook_mutex_);
-    // Create a copy of the orderbook
-    Orderbook copy;
-    copy.updateBids(orderbook_.getBids());
-    copy.updateAsks(orderbook_.getAsks());
-    return copy;
+    return orderbook_;
 }
 
 void OrderbookFetcher::run() {
     try {
+        // Run asio loop
         client_->run();
     } catch (const std::exception& e) {
-        std::cerr << "Exception in websocket thread: " << e.what() << std::endl;
+        std::cerr << "Error in websocket thread: " << e.what() << std::endl;
     }
     
-    running_ = false;
+    // Wait for disconnect signal
+    std::unique_lock<std::mutex> lock(callbacks_mutex_);
+    cv_.wait(lock, [this] { return !running_; });
 }
 
 void OrderbookFetcher::onMessage(websocket_client* client, websocketpp::connection_hdl hdl, 
-                               websocket_client::message_ptr msg) {
+                                websocket_client::message_ptr msg) {
     try {
         // Parse the message
         json data = json::parse(msg->get_payload());
         
-        // Log the received message for debugging
-        std::cout << "Received message from exchange: " << std::endl;
-        std::cout << "Message type: " << (data.contains("e") ? data["e"].get<std::string>() : "unknown") << std::endl;
+        // Log the message for debugging
+        std::cout << "Received message: " << data.dump().substr(0, 100) << "..." << std::endl;
         
-        // Process the orderbook update
-        processOrderbookUpdate(data);
+        // Process the message based on the exchange format
+        // For Binance, check if it's a depth update
+        if (data.contains("e") && data["e"] == "depthUpdate") {
+            processOrderbookUpdate(data);
+        }
+        // Check if it's a subscription response
+        else if (data.contains("result") && data.contains("id")) {
+            std::cout << "Subscription response: " << data.dump() << std::endl;
+        }
+        // Handle other message types as needed
+        else {
+            std::cout << "Unknown message type: " << data.dump().substr(0, 100) << "..." << std::endl;
+        }
     } catch (const std::exception& e) {
-        std::cerr << "Error in onMessage: " << e.what() << std::endl;
-        std::cerr << "Message payload: " << msg->get_payload() << std::endl;
+        std::cerr << "Error processing message: " << e.what() << std::endl;
+        std::cerr << "Message payload: " << msg->get_payload().substr(0, 100) << "..." << std::endl;
     }
 }
 
 void OrderbookFetcher::onOpen(websocket_client* client, websocketpp::connection_hdl hdl) {
+    std::cout << "[" << std::chrono::system_clock::now() << "] [connect] Successful connection" << std::endl;
+    
     try {
-        std::cout << "WebSocket connection established" << std::endl;
+        // For Binance, we need to subscribe to the depth stream for the symbol
+        // The format is <symbol>@depth for the raw depth stream
+        std::string subscribe_msg = "{\"method\": \"SUBSCRIBE\", \"params\": [\"" + symbol_ + "@depth\"], \"id\": 1}";
         
-        // Store the connection handle
-        connection_ = hdl;
+        std::cout << "Subscribing to " << symbol_ << "@depth" << std::endl;
+        client->send(hdl, subscribe_msg, websocketpp::frame::opcode::text);
         
-        // Subscribe to the orderbook stream
-        json subscription = {
-            {"method", "SUBSCRIBE"},
-            {"params", {symbol_ + "@depth"}},
-            {"id", 1}
-        };
-        
-        std::cout << "Sending subscription message: " << subscription.dump() << std::endl;
-        
-        client->send(connection_, subscription.dump(), websocketpp::frame::opcode::text);
-        
-        // Set the running flag
-        running_ = true;
+        std::cout << "Connected to exchange" << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "Error in onOpen: " << e.what() << std::endl;
+        std::cerr << "Error subscribing to orderbook: " << e.what() << std::endl;
     }
 }
 
 void OrderbookFetcher::onClose(websocket_client* client, websocketpp::connection_hdl hdl) {
-    std::cout << "Connection closed" << std::endl;
-    running_ = false;
-    cv_.notify_one();
+    std::cout << "Disconnected from exchange" << std::endl;
 }
 
 void OrderbookFetcher::onFail(websocket_client* client, websocketpp::connection_hdl hdl) {
     std::cerr << "Connection failed" << std::endl;
-    running_ = false;
-    cv_.notify_one();
 }
 
 void OrderbookFetcher::processOrderbookUpdate(const json& data) {
     try {
-        std::cout << "Processing orderbook update: " << std::endl;
+        // Clear pre-allocated vectors
+        bid_updates_.clear();
+        ask_updates_.clear();
         
-        // Check if this is a partial or update message
-        if (data.contains("lastUpdateId")) {
-            // This is a partial orderbook
-            std::cout << "Received partial orderbook" << std::endl;
-            
-            // Extract bids and asks
-            std::vector<Order> bids;
-            std::vector<Order> asks;
-            
-            if (data.contains("bids") && data["bids"].is_array()) {
-                for (const auto& bid : data["bids"]) {
-                    if (bid.is_array() && bid.size() >= 2) {
-                        double price = std::stod(bid[0].get<std::string>());
-                        double quantity = std::stod(bid[1].get<std::string>());
-                        bids.emplace_back(price, quantity);
-                    }
+        // Different exchanges have different message formats
+        // This is for Binance
+        if (data.contains("bids") && data.contains("asks")) {
+            // Parse bids
+            for (const auto& bid : data["bids"]) {
+                if (bid.size() >= 2) {
+                    double price = std::stod(bid[0].get<std::string>());
+                    double quantity = std::stod(bid[1].get<std::string>());
+                    bid_updates_.emplace_back(price, quantity);
                 }
-                std::cout << "Processed " << bids.size() << " bids" << std::endl;
             }
             
-            if (data.contains("asks") && data["asks"].is_array()) {
-                for (const auto& ask : data["asks"]) {
-                    if (ask.is_array() && ask.size() >= 2) {
-                        double price = std::stod(ask[0].get<std::string>());
-                        double quantity = std::stod(ask[1].get<std::string>());
-                        asks.emplace_back(price, quantity);
-                    }
+            // Parse asks
+            for (const auto& ask : data["asks"]) {
+                if (ask.size() >= 2) {
+                    double price = std::stod(ask[0].get<std::string>());
+                    double quantity = std::stod(ask[1].get<std::string>());
+                    ask_updates_.emplace_back(price, quantity);
                 }
-                std::cout << "Processed " << asks.size() << " asks" << std::endl;
             }
             
-            // Update the orderbook
+            // Update orderbook
             {
                 std::lock_guard<std::mutex> lock(orderbook_mutex_);
-                orderbook_.updateBids(bids);
-                orderbook_.updateAsks(asks);
+                orderbook_.updateBids(bid_updates_);
+                orderbook_.updateAsks(ask_updates_);
             }
             
             // Notify callbacks
@@ -279,88 +361,36 @@ void OrderbookFetcher::processOrderbookUpdate(const json& data) {
                     callback(orderbook_);
                 }
             }
-        } else if (data.contains("e") && data["e"] == "depthUpdate") {
-            // This is an orderbook update
-            std::cout << "Received orderbook update" << std::endl;
-            
-            // Get the current orderbook
-            Orderbook current_orderbook;
-            {
-                std::lock_guard<std::mutex> lock(orderbook_mutex_);
-                current_orderbook = orderbook_;
-            }
-            
-            // Extract bids and asks
-            std::vector<Order> bids = current_orderbook.getBids();
-            std::vector<Order> asks = current_orderbook.getAsks();
-            
-            // Process bid updates
-            if (data.contains("b") && data["b"].is_array()) {
+        }
+        // For Binance depth update format
+        else if (data.contains("e") && data["e"] == "depthUpdate") {
+            // Parse bids
+            if (data.contains("b")) {
                 for (const auto& bid : data["b"]) {
-                    if (bid.is_array() && bid.size() >= 2) {
+                    if (bid.size() >= 2) {
                         double price = std::stod(bid[0].get<std::string>());
                         double quantity = std::stod(bid[1].get<std::string>());
-                        
-                        // Find the bid at this price level
-                        auto it = std::find_if(bids.begin(), bids.end(),
-                                            [price](const Order& order) {
-                                                return order.price == price;
-                                            });
-                        
-                        if (quantity > 0) {
-                            // Update or add the bid
-                            if (it != bids.end()) {
-                                it->quantity = quantity;
-                            } else {
-                                bids.emplace_back(price, quantity);
-                            }
-                        } else {
-                            // Remove the bid
-                            if (it != bids.end()) {
-                                bids.erase(it);
-                            }
-                        }
+                        bid_updates_.emplace_back(price, quantity);
                     }
                 }
-                std::cout << "Processed " << data["b"].size() << " bid updates" << std::endl;
             }
             
-            // Process ask updates
-            if (data.contains("a") && data["a"].is_array()) {
+            // Parse asks
+            if (data.contains("a")) {
                 for (const auto& ask : data["a"]) {
-                    if (ask.is_array() && ask.size() >= 2) {
+                    if (ask.size() >= 2) {
                         double price = std::stod(ask[0].get<std::string>());
                         double quantity = std::stod(ask[1].get<std::string>());
-                        
-                        // Find the ask at this price level
-                        auto it = std::find_if(asks.begin(), asks.end(),
-                                            [price](const Order& order) {
-                                                return order.price == price;
-                                            });
-                        
-                        if (quantity > 0) {
-                            // Update or add the ask
-                            if (it != asks.end()) {
-                                it->quantity = quantity;
-                            } else {
-                                asks.emplace_back(price, quantity);
-                            }
-                        } else {
-                            // Remove the ask
-                            if (it != asks.end()) {
-                                asks.erase(it);
-                            }
-                        }
+                        ask_updates_.emplace_back(price, quantity);
                     }
                 }
-                std::cout << "Processed " << data["a"].size() << " ask updates" << std::endl;
             }
             
-            // Update the orderbook
+            // Update orderbook
             {
                 std::lock_guard<std::mutex> lock(orderbook_mutex_);
-                orderbook_.updateBids(bids);
-                orderbook_.updateAsks(asks);
+                orderbook_.updateBids(bid_updates_);
+                orderbook_.updateAsks(ask_updates_);
             }
             
             // Notify callbacks
@@ -370,12 +400,12 @@ void OrderbookFetcher::processOrderbookUpdate(const json& data) {
                     callback(orderbook_);
                 }
             }
-        } else {
-            // This is some other message
-            std::cout << "Received other message type: " << data.dump() << std::endl;
+        }
+        else {
+            std::cerr << "Unknown orderbook update format" << std::endl;
         }
     } catch (const std::exception& e) {
-        std::cerr << "Error in processOrderbookUpdate: " << e.what() << std::endl;
+        std::cerr << "Error processing orderbook update: " << e.what() << std::endl;
     }
 }
 

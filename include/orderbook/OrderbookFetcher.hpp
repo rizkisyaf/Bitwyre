@@ -26,24 +26,34 @@ using websocket_client = websocketpp::client<websocketpp::config::asio_tls_clien
 
 namespace trading {
 
-/**
- * @brief Represents an order in the orderbook
- */
-struct Order {
+// Pre-allocate memory for orders
+constexpr size_t INITIAL_ORDERS_CAPACITY = 100;
+
+// Use alignas for better memory alignment and cache efficiency
+struct alignas(16) Order {
     double price;
     double quantity;
     
     Order(double p, double q) : price(p), quantity(q) {}
 };
 
+// Forward declaration
+class Orderbook;
+
+// Callback type for orderbook updates
+using OrderbookCallback = std::function<void(const Orderbook&)>;
+
 /**
- * @brief Represents a snapshot of the orderbook at a given time
+ * @brief Represents an orderbook with bids and asks
  */
 class Orderbook {
 public:
-    Orderbook() = default;
+    Orderbook() {
+        // Pre-allocate memory to avoid reallocations
+        bids_.reserve(INITIAL_ORDERS_CAPACITY);
+        asks_.reserve(INITIAL_ORDERS_CAPACITY);
+    }
     
-    // Copy constructor
     Orderbook(const Orderbook& other) {
         std::lock_guard<std::mutex> lock1(mutex_);
         std::lock_guard<std::mutex> lock2(other.mutex_);
@@ -51,7 +61,6 @@ public:
         asks_ = other.asks_;
     }
     
-    // Assignment operator
     Orderbook& operator=(const Orderbook& other) {
         if (this != &other) {
             std::lock_guard<std::mutex> lock1(mutex_);
@@ -65,27 +74,25 @@ public:
     void updateBids(const std::vector<Order>& bids);
     void updateAsks(const std::vector<Order>& asks);
     
-    // Get the best bid price
     double getBestBid() const;
-    // Get the best ask price
+    
     double getBestAsk() const;
-    // Get the mid price
+    
     double getMidPrice() const;
-    // Get the spread
+    
     double getSpread() const;
     
-    // Get all bids
-    std::vector<Order> getBids() const {
+    // Use inline for small, frequently called methods
+    inline std::vector<Order> getBids() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return bids_;
     }
     
-    // Get all asks
-    std::vector<Order> getAsks() const {
+    inline std::vector<Order> getAsks() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return asks_;
     }
-    
+
 private:
     std::vector<Order> bids_;
     std::vector<Order> asks_;
@@ -93,39 +100,48 @@ private:
 };
 
 /**
- * @brief Fetches orderbook data from an exchange using websockets
+ * @brief Fetches orderbook data from an exchange
  */
 class OrderbookFetcher {
 public:
-    using OrderbookCallback = std::function<void(const Orderbook&)>;
-    
     OrderbookFetcher();
+    OrderbookFetcher(const std::string& symbol);
     ~OrderbookFetcher();
     
     /**
-     * @brief Connect to the exchange websocket
-     * @param exchange_url The URL of the exchange websocket
-     * @param symbol The trading pair symbol
-     * @return true if connection was successful, false otherwise
+     * @brief Connect to the exchange
+     * 
+     * @param exchange_url The exchange websocket URL
+     * @param symbol The trading symbol
+     * @return true if connection was successful
      */
     bool connect(const std::string& exchange_url, const std::string& symbol);
     
     /**
-     * @brief Disconnect from the exchange websocket
+     * @brief Disconnect from the exchange
      */
     void disconnect();
     
     /**
-     * @brief Register a callback to be called when the orderbook is updated
+     * @brief Register a callback for orderbook updates
+     * 
      * @param callback The callback function
      */
     void registerCallback(OrderbookCallback callback);
     
     /**
-     * @brief Get the latest orderbook snapshot
-     * @return The latest orderbook snapshot
+     * @brief Get the latest orderbook
+     * 
+     * @return The latest orderbook
      */
     Orderbook getLatestOrderbook() const;
+    
+    /**
+     * @brief Get the trading symbol
+     * 
+     * @return The trading symbol
+     */
+    std::string getSymbol() const { return symbol_; }
     
 private:
     void run();
@@ -146,9 +162,13 @@ private:
     std::vector<OrderbookCallback> callbacks_;
     std::mutex callbacks_mutex_;
     
-    std::atomic<bool> running_;
+    std::atomic<bool> running_{false};
     std::thread websocket_thread_;
     std::condition_variable cv_;
+    
+    // Pre-allocated vectors for processing updates
+    std::vector<Order> bid_updates_;
+    std::vector<Order> ask_updates_;
 };
 
 } // namespace trading 

@@ -31,7 +31,10 @@ TEST(TradeOrderTest, BasicFunctionality) {
 // In a real test, we would use mock objects for the OrderbookFetcher and TradingModel
 // For this example, we'll just test the basic functionality
 TEST(TradingBotTest, BasicFunctionality) {
-    TradingBot bot;
+    // Create mock objects
+    auto fetcher = std::make_shared<trading::OrderbookFetcher>("btcusdt");
+    auto model = std::make_shared<trading::TradingModel>();
+    trading::TradingBot bot(fetcher, model);
     
     // Check the initial state
     EXPECT_EQ(bot.getPosition(), 0.0);
