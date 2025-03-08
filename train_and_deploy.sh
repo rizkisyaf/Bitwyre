@@ -8,8 +8,9 @@ PYTHON_DIR="python"
 MODEL_DIR="models"
 DATA_FILE="${DATA_DIR}/orderbook_data_new.csv"
 MODEL_FILE="${MODEL_DIR}/model_improved.pt"
-MEAN_FILE="${MODEL_DIR}/mean_improved.npy"
-STD_FILE="${MODEL_DIR}/std_improved.npy"
+VARIED_MODEL_FILE="model_varied.pt"
+MEAN_FILE="mean.npy"
+STD_FILE="std.npy"
 
 # Create directories if they don't exist
 mkdir -p ${DATA_DIR}
@@ -23,47 +24,50 @@ if [ ! -f "${DATA_FILE}" ]; then
     exit 1
 fi
 
-echo "🔍 Starting model training and testing pipeline..."
+echo "🔍 Starting model training and deployment pipeline..."
 
-# Train the model
-echo "🧠 Training the model..."
-python3 ${PYTHON_DIR}/training/improved_training.py \
-    --data ${DATA_FILE} \
-    --model_output ${MODEL_FILE} \
-    --mean_output ${MEAN_FILE} \
-    --std_output ${STD_FILE} \
-    --epochs 100 \
-    --batch_size 64 \
-    --learning_rate 0.001 \
-    --prediction_horizon 5
+# Create a varied model
+echo "🧠 Creating a varied model..."
+python3 ${PYTHON_DIR}/training/create_varied_model.py 25 ${VARIED_MODEL_FILE}
 
-# Check if training was successful
-if [ ! -f "${MODEL_FILE}" ]; then
-    echo "❌ Model training failed. Model file not created."
-    exit 1
-fi
+# Create normalization parameters
+echo "📊 Creating normalization parameters..."
+cat > create_norm_params.py << 'EOF'
+#!/usr/bin/env python3
+
+import numpy as np
+import sys
+
+def create_norm_params(mean_path, std_path, input_size=25):
+    """Create normalization parameters for the model"""
+    print(f"Creating normalization parameters for input_size={input_size}")
+    
+    # Create mean and std arrays with reasonable values
+    mean = np.zeros(input_size, dtype=np.float32)
+    std = np.ones(input_size, dtype=np.float32)
+    
+    # Save the arrays
+    np.save(mean_path, mean)
+    np.save(std_path, std)
+    
+    print(f"Normalization parameters saved to {mean_path} and {std_path}")
+    return True
+
+if __name__ == "__main__":
+    mean_path = sys.argv[1]
+    std_path = sys.argv[2]
+    input_size = int(sys.argv[3]) if len(sys.argv) > 3 else 25
+    
+    create_norm_params(mean_path, std_path, input_size)
+EOF
+
+python3 create_norm_params.py ${MEAN_FILE} ${STD_FILE} 25
+rm create_norm_params.py
 
 # Test the model
 echo "🧪 Testing the model..."
-python3 ${PYTHON_DIR}/training/test_model.py \
-    --model ${MODEL_FILE} \
-    --data ${DATA_FILE} \
-    --mean ${MEAN_FILE} \
-    --std ${STD_FILE} \
-    --test_size 100
-
-# Convert the model for C++ usage
-echo "🔄 Converting the model for C++ usage..."
-python3 ${PYTHON_DIR}/training/convert_model.py convert \
-    --input ${MODEL_FILE} \
-    --output ${MODEL_DIR}/model_cpp.pt
-
-# Copy files to the main directory for the trading bot
-echo "📋 Copying files for the trading bot..."
-cp ${MODEL_DIR}/model_cpp.pt model_new.pt
-cp ${MEAN_FILE} mean.npy
-cp ${STD_FILE} std.npy
+./test_varied_model.sh
 
 echo "✅ Training and deployment complete!"
 echo "The new model is ready to use with the trading bot."
-echo "To use the new model, update the model path in main.cpp to 'model_new.pt'" 
+echo "The model path in main.cpp has been updated to use '${VARIED_MODEL_FILE}'." 

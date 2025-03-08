@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Script to test the trading bot with placeholder API keys
+# Script to test the trading bot with the varied model
 
-echo "Starting trading bot test (will run for 10 seconds)..."
+echo "Starting model test..."
 
-# Run the trading bot with test connection parameters
-./build/src/trading_bot btcusdt 10 placeholder_api_key placeholder_secret_key --test_connection
+# Test the varied model
+./test_varied_model.sh
 
-echo "Test completed!" 
+echo "Model test completed!" 
