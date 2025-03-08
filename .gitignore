@@ -47,6 +47,13 @@ var/
 # Log files
 *.log
 
+# Data files
+data/
+*.csv
+models/
+mean*.npy
+std*.npy
+
 # OS-specific files
 .DS_Store
 .DS_Store?
@@ -54,6 +61,4 @@ var/
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db 
-
-README.md
+Thumbs.db

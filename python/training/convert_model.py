@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import sys
 import os
+import argparse
 
 class AttentionBlock(nn.Module):
     def __init__(self, embed_dim, num_heads=4, dropout=0.2):
@@ -77,6 +78,7 @@ def convert_model(input_path, output_path):
         state_dict = torch.load(input_path)
         model = ImprovedTradingModel()
         model.load_state_dict(state_dict)
+        print(f"Successfully loaded model state dict from {input_path}")
     except RuntimeError as e:
         print(f"Could not load as state dict: {e}")
         print("Trying to load as TorchScript model...")
@@ -99,6 +101,16 @@ def convert_model(input_path, output_path):
     
     # Create example input with correct shape (batch_size, input_size)
     example_input = torch.randn(1, 50)
+    
+    # Test forward pass to ensure no NaN outputs
+    with torch.no_grad():
+        output = model(example_input)
+        if torch.isnan(output).any() or torch.isinf(output).any():
+            print("Warning: Model produces NaN or Inf outputs. Reinitializing...")
+            create_new_model(output_path)
+            return
+        else:
+            print(f"Model test output: {output.item()}")
     
     # Trace the model
     traced_model = torch.jit.trace(model, example_input)
@@ -147,22 +159,40 @@ def create_new_model(output_path):
     print(f"New model saved to {output_path}")
     return True
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python convert_model.py <input_path> <output_path>")
-        print("   or: python convert_model.py new <output_path>")
-        sys.exit(1)
+def main():
+    parser = argparse.ArgumentParser(description='Convert or create a trading model')
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
     
-    if sys.argv[1] == "new":
-        if len(sys.argv) != 3:
-            print("Usage: python convert_model.py new <output_path>")
-            sys.exit(1)
-        output_path = sys.argv[2]
-        create_new_model(output_path)
+    # Convert command
+    convert_parser = subparsers.add_parser('convert', help='Convert an existing model')
+    convert_parser.add_argument('--input', type=str, required=True, help='Path to the input model')
+    convert_parser.add_argument('--output', type=str, required=True, help='Path to save the output model')
+    
+    # Create command
+    create_parser = subparsers.add_parser('create', help='Create a new model')
+    create_parser.add_argument('--output', type=str, required=True, help='Path to save the output model')
+    
+    # Legacy command-line support
+    parser.add_argument('input', nargs='?', help='Legacy: Path to the input model')
+    parser.add_argument('output', nargs='?', help='Legacy: Path to save the output model')
+    
+    args = parser.parse_args()
+    
+    # Handle legacy command-line arguments
+    if args.input and args.output and not args.command:
+        if args.input == 'new':
+            create_new_model(args.output)
+        else:
+            convert_model(args.input, args.output)
+        return
+    
+    # Handle new command-line arguments
+    if args.command == 'convert':
+        convert_model(args.input, args.output)
+    elif args.command == 'create':
+        create_new_model(args.output)
     else:
-        if len(sys.argv) != 3:
-            print("Usage: python convert_model.py <input_path> <output_path>")
-            sys.exit(1)
-        input_path = sys.argv[1]
-        output_path = sys.argv[2]
-        convert_model(input_path, output_path) 
+        parser.print_help()
+
+if __name__ == "__main__":
+    main() 
