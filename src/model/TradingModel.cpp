@@ -213,6 +213,14 @@ double TradingModel::predict(const std::vector<float>& features) {
             }
         }
         
+        if (has_invalid) {
+            std::cout << "Cleaned features (first 10): ";
+            for (size_t i = 0; i < std::min(cleaned_features.size(), (size_t)10); ++i) {
+                std::cout << cleaned_features[i] << " ";
+            }
+            std::cout << std::endl;
+        }
+        
         // Apply normalization
         std::vector<float> normalized_features = normalizeFeatures(cleaned_features);
         

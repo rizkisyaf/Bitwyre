@@ -384,6 +384,11 @@ void TradingBot::onOrderbookUpdate(const Orderbook& orderbook) {
         
         // Add market volatility
         double volatility = calculateMarketVolatility();
+        // Check for NaN or Inf values
+        if (std::isnan(volatility) || std::isinf(volatility)) {
+            std::cerr << "Warning: Invalid volatility value, using 0.0 instead" << std::endl;
+            volatility = 0.0;
+        }
         features.push_back(static_cast<float>(volatility));
         
         // Add position as a feature
@@ -695,6 +700,7 @@ void TradingBot::updateOrderStatus() {
 double TradingBot::calculateMarketVolatility() const {
     std::lock_guard<std::mutex> lock(price_history_mutex_);
     
+    // Need at least 2 price points to calculate volatility
     if (price_history_.size() < 2) {
         return 0.0;
     }
@@ -703,9 +709,27 @@ double TradingBot::calculateMarketVolatility() const {
     std::vector<double> returns;
     returns.reserve(price_history_.size() - 1);
     
+    bool all_identical = true;
+    double first_price = price_history_[0];
+    
     for (size_t i = 1; i < price_history_.size(); ++i) {
-        double ret = (price_history_[i] - price_history_[i - 1]) / price_history_[i - 1];
-        returns.push_back(ret);
+        // Check if prices are different
+        if (std::abs(price_history_[i] - first_price) > 1e-10) {
+            all_identical = false;
+        }
+        
+        // Avoid division by zero
+        if (std::abs(price_history_[i - 1]) < 1e-10) {
+            returns.push_back(0.0);
+        } else {
+            double ret = (price_history_[i] - price_history_[i - 1]) / price_history_[i - 1];
+            returns.push_back(ret);
+        }
+    }
+    
+    // If all prices are identical, volatility is zero
+    if (all_identical || returns.empty()) {
+        return 0.0;
     }
     
     // Calculate standard deviation of returns
@@ -714,7 +738,17 @@ double TradingBot::calculateMarketVolatility() const {
     double sq_sum = std::inner_product(returns.begin(), returns.end(), returns.begin(), 0.0,
         std::plus<>(), [mean](double x, double y) { return (x - mean) * (y - mean); });
     
+    // Avoid negative values under the square root due to floating point errors
+    if (sq_sum < 0.0) {
+        sq_sum = 0.0;
+    }
+    
     double std_dev = std::sqrt(sq_sum / returns.size());
+    
+    // Check for NaN or Inf
+    if (std::isnan(std_dev) || std::isinf(std_dev)) {
+        return 0.0;
+    }
     
     return std_dev;
 }
