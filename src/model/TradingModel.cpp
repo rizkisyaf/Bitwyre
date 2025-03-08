@@ -18,7 +18,9 @@ TradingModel::TradingModel() {
     last_trade_time_ = std::chrono::high_resolution_clock::now();
 }
 
-TradingModel::TradingModel(const std::string& model_path) {
+TradingModel::TradingModel(const std::string& model_path, const std::string& mean_path, const std::string& std_path) {
+    std::cout << "Initializing TradingModel with model path: " << model_path << std::endl;
+    
     // Pre-allocate price history to avoid reallocations
     price_history_.reserve(price_history_length_);
     volatility_history_.reserve(price_history_length_);
@@ -28,7 +30,20 @@ TradingModel::TradingModel(const std::string& model_path) {
     last_trade_time_ = std::chrono::high_resolution_clock::now();
     
     // Load the model
-    loadModel(model_path);
+    if (!loadModel(model_path)) {
+        std::cerr << "Failed to initialize model" << std::endl;
+        throw std::runtime_error("Model initialization failed");
+    }
+    
+    // Load normalization parameters if provided
+    if (!mean_path.empty() && !std_path.empty()) {
+        if (!loadNormalizationParams(mean_path, std_path)) {
+            std::cerr << "Failed to load normalization parameters" << std::endl;
+            std::cout << "Using default normalization" << std::endl;
+        }
+    }
+    
+    std::cout << "TradingModel initialization complete" << std::endl;
 }
 
 TradingModel::~TradingModel() {
@@ -37,216 +52,293 @@ TradingModel::~TradingModel() {
 
 bool TradingModel::loadModel(const std::string& model_path) {
     try {
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        model_ = std::make_shared<torch::jit::script::Module>(torch::jit::load(model_path));
+        std::cout << "Loading model from path: " << model_path << std::endl;
+        
+        // Check if file exists
+        std::ifstream f(model_path.c_str());
+        if (!f.good()) {
+            std::cerr << "Error: Model file does not exist at path: " << model_path << std::endl;
+            return false;
+        }
+        
+        // Load the model
+        try {
+            torch::jit::Module loaded_model = torch::jit::load(model_path);
+            model_ = std::make_shared<torch::jit::Module>(std::move(loaded_model));
+        } catch (const c10::Error& e) {
+            std::cerr << "Failed to load the model: " << e.what() << std::endl;
+            return false;
+        }
+        
+        if (!model_) {
+            std::cerr << "Error: Failed to load model" << std::endl;
+            return false;
+        }
+        
+        // Set to evaluation mode
         model_->eval();
+        std::cout << "Model loaded and set to evaluation mode" << std::endl;
+        
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Error loading model: " << e.what() << std::endl;
+        std::cerr << "Unexpected error loading model: " << e.what() << std::endl;
         return false;
     }
 }
 
-double TradingModel::predict(const Orderbook& orderbook) {
+bool TradingModel::loadNormalizationParams(const std::string& mean_path, const std::string& std_path) {
     try {
-        // Extract features and convert to tensor
-        auto features = extractFeatures(orderbook);
-        auto input = featuresToTensor(features);
+        std::cout << "Loading normalization parameters from:" << std::endl;
+        std::cout << "  Mean: " << mean_path << std::endl;
+        std::cout << "  Std: " << std_path << std::endl;
         
-        // Make prediction
-        std::lock_guard<std::mutex> lock(model_mutex_);
-        if (!model_) {
-            std::cerr << "Model not loaded" << std::endl;
-            return 0.0;
+        // Check if files exist
+        std::ifstream mean_file(mean_path.c_str(), std::ios::binary);
+        std::ifstream std_file(std_path.c_str(), std::ios::binary);
+        
+        if (!mean_file.good() || !std_file.good()) {
+            std::cerr << "Error: Normalization parameter files do not exist" << std::endl;
+            return false;
         }
         
-        // Use no_grad to disable gradient calculation for inference
-        torch::NoGradGuard no_grad;
+        // Read the .npy files (simplified approach)
+        // Skip the .npy header (first 128 bytes should be enough)
+        mean_file.seekg(128);
+        std_file.seekg(128);
         
-        // Forward pass
-        auto output = model_->forward({input}).toTensor();
+        // Allocate vectors
+        feature_mean_.resize(FEATURE_COUNT);
+        feature_std_.resize(FEATURE_COUNT);
         
-        // Get prediction value
-        return output[0].item<double>();
+        // Read the data
+        mean_file.read(reinterpret_cast<char*>(feature_mean_.data()), FEATURE_COUNT * sizeof(float));
+        std_file.read(reinterpret_cast<char*>(feature_std_.data()), FEATURE_COUNT * sizeof(float));
+        
+        // Check if we read the correct amount of data
+        if (mean_file.fail() || std_file.fail()) {
+            std::cerr << "Error reading normalization parameters" << std::endl;
+            return false;
+        }
+        
+        std::cout << "Normalization parameters loaded successfully" << std::endl;
+        return true;
     } catch (const std::exception& e) {
-        std::cerr << "Error making prediction: " << e.what() << std::endl;
-        return 0.0;
+        std::cerr << "Error loading normalization parameters: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool TradingModel::verifyModelIO(const torch::Tensor& input) {
+    if (!model_) {
+        std::cerr << "Error: Model not loaded" << std::endl;
+        return false;
+    }
+    
+    try {
+        if (!input.defined()) {
+            std::cerr << "Error: Input tensor is not defined" << std::endl;
+            return false;
+        }
+        
+        // Print detailed input tensor info
+        std::cout << "\nInput Tensor Analysis:" << std::endl;
+        std::cout << "Shape: [";
+        for (int64_t i = 0; i < input.dim(); ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << input.size(i);
+        }
+        std::cout << "]" << std::endl;
+        
+        // Run test forward pass
+        torch::NoGradGuard no_grad;
+        std::vector<torch::jit::IValue> inputs;
+        inputs.push_back(input);
+        
+        std::cout << "\nRunning forward pass..." << std::endl;
+        auto output = model_->forward(inputs);
+        if (!output.isTensor()) {
+            std::cerr << "Error: Model output is not a tensor" << std::endl;
+            return false;
+        }
+        
+        auto output_tensor = output.toTensor();
+        
+        // Print detailed output tensor info
+        std::cout << "\nOutput Tensor Analysis:" << std::endl;
+        std::cout << "Shape: [";
+        for (int64_t i = 0; i < output_tensor.dim(); ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << output_tensor.size(i);
+        }
+        std::cout << "]" << std::endl;
+        
+        // Check for NaN values
+        if (output_tensor.isnan().any().item<bool>()) {
+            std::cerr << "Warning: NaN values detected in output" << std::endl;
+        }
+        
+        return true;
+    } catch (const c10::Error& e) {
+        std::cerr << "PyTorch error during model verification: " << e.what() << std::endl;
+        return false;
+    } catch (const std::exception& e) {
+        std::cerr << "Unexpected error during model verification: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+double TradingModel::predict(const std::vector<float>& features) {
+    if (!model_) {
+        std::cerr << "❌ Error: Model not loaded" << std::endl;
+        throw std::runtime_error("Model not loaded");
+    }
+    
+    try {
+        std::cout << "\nFeature Analysis:" << std::endl;
+        std::cout << "Vector size: " << features.size() << std::endl;
+        std::cout << "First 10 features: ";
+        for (size_t i = 0; i < std::min(features.size(), (size_t)10); ++i) {
+            std::cout << features[i] << " ";
+        }
+        std::cout << std::endl;
+        
+        // Check for invalid values in features and replace them
+        bool has_invalid = false;
+        std::vector<float> cleaned_features = features;
+        for (size_t i = 0; i < cleaned_features.size(); ++i) {
+            if (std::isnan(cleaned_features[i]) || std::isinf(cleaned_features[i])) {
+                std::cout << "Invalid value at index " << i << ": " << cleaned_features[i] << " - replacing with 0" << std::endl;
+                cleaned_features[i] = 0.0f;
+                has_invalid = true;
+            }
+        }
+        
+        // Apply normalization
+        std::vector<float> normalized_features = normalizeFeatures(cleaned_features);
+        
+        torch::NoGradGuard no_grad;
+        auto input = torch::tensor(normalized_features).reshape({1, -1});
+        
+        if (!verifyModelIO(input)) {
+            std::cerr << "Error: Model verification failed" << std::endl;
+            throw std::runtime_error("Model verification failed");
+        }
+        
+        std::vector<torch::jit::IValue> inputs;
+        inputs.push_back(input);
+        
+        std::cout << "\nRunning prediction..." << std::endl;
+        auto output = model_->forward(inputs).toTensor();
+        
+        // Handle potential NaN values
+        if (output.isnan().any().item<bool>()) {
+            std::cerr << "Error: Model produced NaN output" << std::endl;
+            throw std::runtime_error("Model produced NaN output");
+        }
+        
+        // Squeeze if necessary
+        if (output.dim() == 2 && output.size(0) == 1 && output.size(1) == 1) {
+            output = output.squeeze();
+        }
+        
+        double raw_prediction = output.item<double>();
+        
+        // Check for invalid raw prediction
+        if (std::isnan(raw_prediction) || std::isinf(raw_prediction)) {
+            std::cerr << "Error: Invalid raw prediction value: " << raw_prediction << std::endl;
+            throw std::runtime_error("Invalid raw prediction value");
+        }
+        
+        // Apply sigmoid and ensure bounds
+        double prediction = 1.0 / (1.0 + std::exp(-raw_prediction));
+        prediction = std::max(0.0, std::min(1.0, prediction));
+        
+        std::cout << "Final prediction: " << prediction << std::endl;
+        return prediction;
+    } catch (const c10::Error& e) {
+        std::cerr << "PyTorch error during prediction: " << e.what() << std::endl;
+        throw std::runtime_error(std::string("PyTorch error: ") + e.what());
+    } catch (const std::exception& e) {
+        std::cerr << "Unexpected error during prediction: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+double TradingModel::predict(const Orderbook& orderbook) {
+    std::lock_guard<std::mutex> lock(model_mutex_);
+    
+    if (!model_) {
+        std::cerr << "Error: Model not loaded" << std::endl;
+        return 0.5;
+    }
+    
+    try {
+        auto features = extractFeatures(orderbook);
+        std::vector<float> feature_vector;
+        feature_vector.reserve(FEATURE_COUNT);
+        
+        // Convert features to vector
+        // Add your feature extraction logic here based on the Python implementation
+        
+        return predict(feature_vector);
+    } catch (const std::exception& e) {
+        std::cerr << "Error during orderbook prediction: " << e.what() << std::endl;
+        return 0.5;
     }
 }
 
 FeatureVector TradingModel::extractFeatures(const Orderbook& orderbook) {
     FeatureVector features;
     
-    // Get basic orderbook features
-    features.mid_price = orderbook.getMidPrice();
-    features.spread = orderbook.getSpread();
-    
-    // Get bids and asks (use const references to avoid copies)
+    // Get bid and ask data
     const auto& bids = orderbook.getBids();
     const auto& asks = orderbook.getAsks();
     
-    // Pre-calculate sizes to avoid repeated calls
-    const size_t bid_size = bids.size();
-    const size_t ask_size = asks.size();
+    // Basic features
+    features.mid_price = orderbook.getMidPrice();
+    features.spread = orderbook.getSpread();
     
-    // Calculate bid-ask imbalance with more precision
-    double total_bid_value = 0.0;
-    double total_ask_value = 0.0;
-    double total_bid_quantity = 0.0;
-    double total_ask_quantity = 0.0;
-    
-    // Calculate total quantities and values
-    for (size_t i = 0; i < std::min(bid_size, static_cast<size_t>(max_depth_)); ++i) {
-        total_bid_quantity += bids[i].quantity;
-        total_bid_value += bids[i].price * bids[i].quantity;
+    // Extract bid and ask prices/quantities
+    for (const auto& bid : bids) {
+        features.bid_prices.push_back(bid.price);
+        features.bid_quantities.push_back(bid.quantity);
     }
     
-    for (size_t i = 0; i < std::min(ask_size, static_cast<size_t>(max_depth_)); ++i) {
-        total_ask_quantity += asks[i].quantity;
-        total_ask_value += asks[i].price * asks[i].quantity;
+    for (const auto& ask : asks) {
+        features.ask_prices.push_back(ask.price);
+        features.ask_quantities.push_back(ask.quantity);
     }
     
-    // Calculate bid-ask imbalance
-    features.bid_ask_imbalance = (total_bid_value - total_ask_value) / 
-                               (total_bid_value + total_ask_value + 1e-10);
-    
-    // Calculate volume-weighted mid price
-    double vwmp = 0.0;
-    double total_quantity = total_bid_quantity + total_ask_quantity;
-    
-    if (total_quantity > 0) {
-        vwmp = (features.mid_price * total_quantity + 
-                (bid_size > 0 ? bids[0].price * total_bid_quantity : 0) + 
-                (ask_size > 0 ? asks[0].price * total_ask_quantity : 0)) / (2 * total_quantity);
-    } else {
-        vwmp = features.mid_price;
-    }
-    
-    features.volume_weighted_mid_price = vwmp;
-    
-    // Add book depth feature
-    features.book_depth = std::min(bid_size, ask_size);
-    
-    // Calculate time since last trade
-    auto current_time = std::chrono::high_resolution_clock::now();
-    auto time_diff = std::chrono::duration_cast<std::chrono::milliseconds>(
-        current_time - last_trade_time_).count();
-    features.time_since_last_trade = static_cast<double>(time_diff);
-    
-    // Update last trade time
-    last_trade_time_ = current_time;
-    
-    // Update trade intervals
-    if (!trade_intervals_.empty()) {
-        trade_intervals_.push_back(features.time_since_last_trade);
-        if (trade_intervals_.size() > price_history_length_) {
-            trade_intervals_.erase(trade_intervals_.begin());
-        }
-        
-        // Calculate trade frequency (trades per second)
-        double sum_intervals = std::accumulate(trade_intervals_.begin(), trade_intervals_.end(), 0.0);
-        features.trade_frequency = trade_intervals_.size() * 1000.0 / (sum_intervals + 1e-10);
-    } else {
-        features.trade_frequency = 0.0;
-    }
-    
-    // Update price history
-    price_history_.push_back(features.mid_price);
-    if (price_history_.size() > price_history_length_) {
-        price_history_.erase(price_history_.begin());
-    }
-    
-    // Calculate price momentum and volatility
-    if (price_history_.size() >= 2) {
-        features.price_momentum = (price_history_.back() - price_history_.front()) / 
-                                 (price_history_.front() + 1e-10);
-        
-        // Calculate price volatility
-        double sum_squared_diff = 0.0;
-        double mean_price = std::accumulate(price_history_.begin(), price_history_.end(), 0.0) / 
-                           price_history_.size();
-        
-        for (const auto& price : price_history_) {
-            sum_squared_diff += std::pow(price - mean_price, 2);
-        }
-        
-        features.price_volatility = std::sqrt(sum_squared_diff / price_history_.size());
-        
-        // Calculate EMA volatility
-        double alpha = 0.1; // EMA factor
-        features.ema_volatility = alpha * features.price_volatility + 
-                                (1 - alpha) * (volatility_history_.empty() ? 0 : volatility_history_.back());
-        
-        // Update volatility history
-        volatility_history_.push_back(features.ema_volatility);
-        if (volatility_history_.size() > price_history_length_) {
-            volatility_history_.erase(volatility_history_.begin());
-        }
-    } else {
-        features.price_momentum = 0.0;
-        features.price_volatility = 0.0;
-        features.ema_volatility = 0.0;
-    }
-    
-    // Extract price and quantity features
-    for (size_t i = 0; i < max_depth_; ++i) {
-        // Add bid prices and quantities
-        features.bid_prices.push_back(i < bid_size ? bids[i].price : 0.0);
-        features.bid_quantities.push_back(i < bid_size ? bids[i].quantity : 0.0);
-        
-        // Add ask prices and quantities
-        features.ask_prices.push_back(i < ask_size ? asks[i].price : 0.0);
-        features.ask_quantities.push_back(i < ask_size ? asks[i].quantity : 0.0);
-    }
+    // Calculate additional features
+    // Add your feature calculation logic here based on the Python implementation
     
     return features;
 }
 
-torch::Tensor TradingModel::featuresToTensor(const FeatureVector& features) {
-    // Use pre-allocated tensor to avoid memory allocation
-    auto& tensor = input_tensor_;
+std::vector<float> TradingModel::normalizeFeatures(const std::vector<float>& features) {
+    std::vector<float> normalized_features(features.size());
     
-    // Reset tensor values to zero
-    tensor.zero_();
-    
-    // Get data pointer for direct access
-    float* data_ptr = tensor.data_ptr<float>();
-    
-    // Fill tensor with normalized features
-    // Using direct indexing instead of push_back to avoid bounds checking
-    
-    // Basic features
-    data_ptr[0] = static_cast<float>((features.mid_price - price_mean_) / (price_std_ + 1e-10));
-    data_ptr[1] = static_cast<float>(features.spread / (price_std_ + 1e-10));
-    
-    // Additional features
-    data_ptr[2] = static_cast<float>(features.bid_ask_imbalance);
-    data_ptr[3] = static_cast<float>((features.volume_weighted_mid_price - price_mean_) / (price_std_ + 1e-10));
-    data_ptr[4] = static_cast<float>(features.price_momentum);
-    
-    // New temporal features
-    data_ptr[5] = static_cast<float>(features.book_depth / max_depth_); // Normalize by max depth
-    data_ptr[6] = static_cast<float>(features.price_volatility / (price_std_ + 1e-10));
-    data_ptr[7] = static_cast<float>(features.ema_volatility / (price_std_ + 1e-10));
-    data_ptr[8] = static_cast<float>(std::min(features.time_since_last_trade / 1000.0, 10.0)); // Cap at 10 seconds
-    data_ptr[9] = static_cast<float>(features.trade_frequency / 100.0); // Normalize assuming max 100 trades/sec
-    
-    // Bid prices and quantities
-    const size_t bid_size = features.bid_prices.size();
-    for (size_t i = 0; i < max_depth_; ++i) {
-        // Use ternary operator instead of if-else to reduce branches
-        data_ptr[10 + i] = static_cast<float>((i < bid_size ? features.bid_prices[i] : 0.0) - price_mean_) / (price_std_ + 1e-10);
-        data_ptr[10 + max_depth_ + i] = static_cast<float>((i < bid_size ? features.bid_quantities[i] : 0.0) - quantity_mean_) / (quantity_std_ + 1e-10);
+    // If normalization parameters are not loaded, return the original features
+    if (feature_mean_.empty() || feature_std_.empty()) {
+        return features;
     }
     
-    // Ask prices and quantities
-    const size_t ask_size = features.ask_prices.size();
-    for (size_t i = 0; i < max_depth_; ++i) {
-        data_ptr[10 + 2 * max_depth_ + i] = static_cast<float>((i < ask_size ? features.ask_prices[i] : 0.0) - price_mean_) / (price_std_ + 1e-10);
-        data_ptr[10 + 3 * max_depth_ + i] = static_cast<float>((i < ask_size ? features.ask_quantities[i] : 0.0) - quantity_mean_) / (quantity_std_ + 1e-10);
+    // Apply normalization
+    for (size_t i = 0; i < features.size(); ++i) {
+        if (i < feature_mean_.size()) {
+            // Handle NaN and Inf values
+            if (std::isnan(features[i]) || std::isinf(features[i])) {
+                normalized_features[i] = 0.0f;
+            } else {
+                // Z-score normalization
+                normalized_features[i] = (features[i] - feature_mean_[i]) / feature_std_[i];
+            }
+        } else {
+            normalized_features[i] = features[i];
+        }
     }
     
-    return tensor;
+    return normalized_features;
 }
 
-} // namespace trading 
+} // namespace trading

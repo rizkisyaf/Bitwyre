@@ -10,7 +10,7 @@ target_link_libraries(orderbook_tests PRIVATE orderbook_lib gtest_main)
 add_test(NAME orderbook_tests COMMAND orderbook_tests)
 
 add_executable(bot_tests BotTests.cpp)
-target_link_libraries(bot_tests PRIVATE bot_lib model_lib orderbook_lib ${TORCH_LIBRARIES} gtest_main)
+target_link_libraries(bot_tests PRIVATE bot model_lib orderbook_lib ${TORCH_LIBRARIES} gtest_main)
 add_test(NAME bot_tests COMMAND bot_tests)
 
 add_executable(model_tests ModelTests.cpp)

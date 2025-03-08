@@ -17,7 +17,7 @@ namespace trading {
 
 // Pre-defined constants for feature vector size
 constexpr int MAX_DEPTH = 10;
-constexpr int FEATURE_COUNT = 50; // Updated to include new temporal features
+constexpr int FEATURE_COUNT = 50; // Confirmed to match the feature vector size used in TradingBot
 
 // Aligned feature vector for better memory access patterns
 struct alignas(32) FeatureVector {
@@ -50,16 +50,33 @@ struct alignas(32) FeatureVector {
 };
 
 /**
- * @brief Trading model that uses PyTorch for prediction
+ * @brief Trading model class
+ * 
+ * This class is responsible for making predictions based on orderbook data.
  */
 class TradingModel {
 public:
+    /**
+     * @brief Default constructor
+     */
     TradingModel();
-    TradingModel(const std::string& model_path);
+    
+    /**
+     * @brief Constructor with model path and normalization parameters
+     * 
+     * @param model_path Path to the model file
+     * @param mean_path Path to the mean values file
+     * @param std_path Path to the standard deviation values file
+     */
+    TradingModel(const std::string& model_path, const std::string& mean_path, const std::string& std_path);
+    
+    /**
+     * @brief Destructor
+     */
     ~TradingModel();
     
     /**
-     * @brief Load a PyTorch model from a file
+     * @brief Load model from file
      * 
      * @param model_path Path to the model file
      * @return true if the model was loaded successfully
@@ -67,51 +84,78 @@ public:
     bool loadModel(const std::string& model_path);
     
     /**
-     * @brief Make a prediction based on the orderbook
+     * @brief Make a prediction based on orderbook data
      * 
-     * @param orderbook Current orderbook state
-     * @return double Prediction value
+     * @param orderbook Orderbook data
+     * @return double Prediction value between 0 and 1
      */
     double predict(const Orderbook& orderbook);
     
     /**
-     * @brief Extract features from the orderbook
+     * @brief Make a prediction based on a feature vector
      * 
-     * @param orderbook Current orderbook state
-     * @return FeatureVector Features extracted from the orderbook
+     * @param features Feature vector
+     * @return double Prediction value between 0 and 1
+     */
+    double predict(const std::vector<float>& features);
+    
+    /**
+     * @brief Extract features from orderbook data
+     * 
+     * @param orderbook Orderbook data
+     * @return FeatureVector Extracted features
      */
     FeatureVector extractFeatures(const Orderbook& orderbook);
     
     /**
-     * @brief Convert features to a tensor for model input
+     * @brief Convert features to tensor
      * 
-     * @param features Features extracted from the orderbook
-     * @return torch::Tensor Tensor for model input
+     * @param features Feature vector
+     * @return torch::Tensor Tensor representation of features
      */
     torch::Tensor featuresToTensor(const FeatureVector& features);
     
 private:
+    // Model
     std::shared_ptr<torch::jit::script::Module> model_;
     std::mutex model_mutex_;
     
-    // Cache for intermediate tensors to avoid allocations
-    torch::Tensor input_tensor_ = torch::zeros({1, FEATURE_COUNT});
-    
-    // Constants for feature normalization (made constexpr for compile-time evaluation)
+    // Feature extraction parameters
     static constexpr int max_depth_ = MAX_DEPTH;
     static constexpr int price_history_length_ = 10;
     std::vector<double> price_history_;
-    
-    // New members for temporal features
     std::vector<double> volatility_history_;
     std::chrono::high_resolution_clock::time_point last_trade_time_;
     std::vector<double> trade_intervals_;
     
     // Normalization parameters
-    double price_mean_ = 0.0;
-    double price_std_ = 1.0;
-    double quantity_mean_ = 0.0;
-    double quantity_std_ = 1.0;
+    std::vector<float> feature_mean_;
+    std::vector<float> feature_std_;
+    
+    /**
+     * @brief Load normalization parameters from files
+     * 
+     * @param mean_path Path to the mean values file
+     * @param std_path Path to the standard deviation values file
+     * @return true if parameters were loaded successfully
+     */
+    bool loadNormalizationParams(const std::string& mean_path, const std::string& std_path);
+    
+    /**
+     * @brief Normalize features using loaded parameters
+     * 
+     * @param features Raw feature vector
+     * @return std::vector<float> Normalized features
+     */
+    std::vector<float> normalizeFeatures(const std::vector<float>& features);
+    
+    /**
+     * @brief Verify model input/output compatibility
+     * 
+     * @param input Input tensor to verify
+     * @return true if input is compatible with model
+     */
+    bool verifyModelIO(const torch::Tensor& input);
 };
 
 } // namespace trading 

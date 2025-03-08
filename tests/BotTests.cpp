@@ -34,19 +34,24 @@ TEST(TradingBotTest, BasicFunctionality) {
     // Create mock objects
     auto fetcher = std::make_shared<trading::OrderbookFetcher>("btcusdt");
     auto model = std::make_shared<trading::TradingModel>();
-    trading::TradingBot bot(fetcher, model);
+    
+    // Create the bot with API keys (using dummy values for testing)
+    double initial_balance = 100.0;
+    std::string api_key = "dummy_api_key";
+    std::string secret_key = "dummy_secret_key";
+    trading::TradingBot bot(fetcher, model, initial_balance, api_key, secret_key);
     
     // Check the initial state
     EXPECT_EQ(bot.getPosition(), 0.0);
-    EXPECT_EQ(bot.getBalance(), 0.0);
+    EXPECT_EQ(bot.getBalance(), initial_balance);
     EXPECT_EQ(bot.getOpenOrders().size(), 0);
     EXPECT_EQ(bot.getFilledOrders().size(), 0);
     
-    // Check the performance metrics
-    nlohmann::json metrics = bot.getPerformanceMetrics();
-    EXPECT_EQ(metrics["total_trades"], 0);
-    EXPECT_EQ(metrics["successful_trades"], 0);
-    EXPECT_EQ(metrics["success_rate"], 0.0);
+    // Check the P&L metrics
+    nlohmann::json pnl_metrics = bot.getPnLMetrics();
+    EXPECT_EQ(pnl_metrics["realized_pnl"], 0.0);
+    EXPECT_EQ(pnl_metrics["unrealized_pnl"], 0.0);
+    EXPECT_EQ(pnl_metrics["total_pnl"], 0.0);
     
     // In a real test, we would initialize the bot with mock objects
     // and test the trading logic

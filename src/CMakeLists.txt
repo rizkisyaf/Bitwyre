@@ -6,18 +6,45 @@ set(C10_LIBRARY "${LIBTORCH_PATH}/lib/libc10.dylib")
 # Set torch libraries
 set(TORCH_LIBRARIES ${TORCH_LIBRARY} ${TORCH_CPU_LIBRARY} ${C10_LIBRARY})
 
+# Add subdirectories
 add_subdirectory(orderbook)
-add_subdirectory(bot)
 add_subdirectory(model)
+add_subdirectory(bot)
 
-# Main executable
+# Find required packages
+find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED)
+
+# Add the main executable
 add_executable(trading_bot main.cpp)
-target_link_libraries(trading_bot 
-    PRIVATE 
+
+# Add collect_orderbook_data executable
+add_executable(collect_orderbook_data collect_orderbook_data.cpp)
+target_link_libraries(collect_orderbook_data
+    PRIVATE
     orderbook_lib
-    bot_lib
+    nlohmann_json::nlohmann_json
+)
+target_compile_features(collect_orderbook_data PRIVATE cxx_std_20)
+
+# Link libraries
+target_link_libraries(trading_bot
+    PRIVATE
+    orderbook_lib
     model_lib
+    bot
+    ${CURL_LIBRARIES}
+    ${OPENSSL_LIBRARIES}
     ${TORCH_LIBRARIES}
-    OpenSSL::SSL
-    OpenSSL::Crypto
-) 
+)
+
+# Include directories
+target_include_directories(trading_bot
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CURL_INCLUDE_DIRS}
+    ${OPENSSL_INCLUDE_DIR}
+)
+
+# Set C++ standard
+target_compile_features(trading_bot PRIVATE cxx_std_20) 

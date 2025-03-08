@@ -1,14 +1,112 @@
 #include "bot/TradingBot.hpp"
+#include "bot/BinanceApiTrader.hpp"
 #include <iostream>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <iomanip>
+#include <sstream>
 
 namespace trading {
 
 TradingBot::TradingBot(std::shared_ptr<OrderbookFetcher> fetcher, 
                        std::shared_ptr<TradingModel> model,
-                       double initial_balance) {
+                       double initial_balance,
+                       const std::string& api_key,
+                       const std::string& secret_key)
+    : orderbook_fetcher_(fetcher),
+      trading_model_(model),
+      initial_balance_(initial_balance),
+      balance_(initial_balance),
+      last_update_time_(std::chrono::high_resolution_clock::now()),
+      last_volume_reset_(std::chrono::system_clock::now())
+{
+    // Get the symbol from the orderbook fetcher
+    symbol_ = orderbook_fetcher_->getSymbol();
+    
+    // Initialize price history
+    price_history_.resize(price_history_length_, 0.0);
+    
+    // Set default order size based on initial balance
+    // Increase order size to 0.1 BTC to ensure minimum notional value of 100 USDT
+    order_size_ = 0.1;  // Fixed at 0.1 BTC to meet minimum notional requirements
+    
+    // If API keys are provided, initialize the API trader
+    if (!api_key.empty() && !secret_key.empty()) {
+        api_trader_ = std::make_shared<BinanceApiTrader>(api_key, secret_key);
+        
+        // Initialize the API trader
+        if (!api_trader_->initialize()) {
+            std::cerr << "❌ Failed to initialize API trader" << std::endl;
+            return;
+        }
+        
+        std::cout << "✔️ API trader initialized successfully" << std::endl;
+        
+        // Test API connection by getting account info
+        auto account_info = api_trader_->getAccountInfo();
+        if (account_info.is_null()) {
+            std::cerr << "❌ Failed to connect to API" << std::endl;
+            return;
+        }
+        
+        std::cout << "✔️ API connection successful" << std::endl;
+        
+        // Check if futures trading is enabled
+        if (api_trader_->getTradingMode() == BinanceApiTrader::TradingMode::USDM_FUTURES) {
+            std::cout << "🚀 Futures trading enabled" << std::endl;
+            
+            // Set leverage to 5x
+            if (!api_trader_->setLeverage(symbol_, leverage_)) {
+                std::cerr << "❌ Failed to set leverage" << std::endl;
+                return;
+            }
+            std::cout << "✅ Leverage set successfully" << std::endl;
+            
+            // Get account information
+            if (!account_info.is_null()) {
+                // For futures, get the USDT balance and positions
+                if (account_info.contains("availableBalance")) {
+                    double available_balance = std::stod(account_info["availableBalance"].get<std::string>());
+                    std::cout << "💰 Available Balance: " << available_balance << " USDT" << std::endl;
+                    
+                    // Update initial balance if it's different
+                    if (std::abs(available_balance - initial_balance_) > 0.01) {
+                        std::cout << "🔄 Updating initial balance from " << initial_balance_ << " to " << available_balance << std::endl;
+                        initial_balance_ = available_balance;
+                        balance_ = available_balance;
+                    }
+                }
+
+                // Get current positions
+                if (account_info.contains("positions")) {
+                    for (const auto& pos : account_info["positions"]) {
+                        std::string pos_symbol = pos["symbol"].get<std::string>();
+                        if (pos_symbol == symbol_) {
+                            double pos_amt = std::stod(pos["positionAmt"].get<std::string>());
+                            position_ = pos_amt;
+                            
+                            // Get unrealized PnL
+                            if (pos.contains("unrealizedProfit")) {
+                                unrealized_pnl_ = std::stod(pos["unrealizedProfit"].get<std::string>());
+                            }
+                            
+                            // Get entry price
+                            if (pos.contains("entryPrice")) {
+                                double entry_price = std::stod(pos["entryPrice"].get<std::string>());
+                                entry_value_ = position_ * entry_price;
+                            }
+                            
+                            std::cout << "📊 Current Position: " << position_ << " BTC"
+                                      << "\n💵 Entry Value: " << entry_value_ << " USDT"
+                                      << "\n📈 Unrealized PnL: " << unrealized_pnl_ << " USDT" << std::endl;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     // Pre-allocate memory for orders
     open_orders_.reserve(INITIAL_ORDERS_CAPACITY);
     filled_orders_.reserve(INITIAL_ORDERS_CAPACITY);
@@ -16,8 +114,8 @@ TradingBot::TradingBot(std::shared_ptr<OrderbookFetcher> fetcher,
     // Pre-allocate pending order
     pending_order_ = new TradeOrder(TradeOrder::Type::BUY, 0.0, 0.0);
     
-    // Initialize performance metrics
-    last_metrics_update_ = std::chrono::system_clock::now();
+    // Initialize system time
+    last_update_time_ = std::chrono::high_resolution_clock::now();
     
     // Pre-allocate price history
     price_history_.reserve(price_history_length_);
@@ -30,13 +128,6 @@ TradingBot::TradingBot(std::shared_ptr<OrderbookFetcher> fetcher,
     
     balance_ = initial_balance;
     initial_balance_ = initial_balance;
-    
-    // Store the shared pointers directly - using shared_ptr now
-    orderbook_fetcher_ = fetcher;  // This is now a shared_ptr
-    trading_model_ = model;  // This is now a shared_ptr
-    
-    // Set symbol from fetcher
-    symbol_ = fetcher->getSymbol();
     
     // Register callback for orderbook updates
     orderbook_fetcher_->registerCallback([this](const Orderbook& orderbook) {
@@ -63,24 +154,10 @@ TradingBot::TradingBot(std::shared_ptr<OrderbookFetcher> fetcher,
     max_interval_volume_ = 0.0;
     avg_interval_volume_ = 0.0;
     interval_count_ = 0;
-    last_volume_reset_ = std::chrono::system_clock::now();
     
-    // Scale order size based on initial balance
-    // For BTC, use a smaller order size to avoid excessive risk
-    // Default is 0.1 BTC, but scale it down for smaller balances
-    if (initial_balance < 1000.0) {
-        // For smaller balances, use a much smaller order size
-        order_size_ = 0.001;  // 0.001 BTC instead of 0.1 BTC
-        std::cout << "Using smaller order size of " << order_size_ << " BTC due to initial balance of $" << initial_balance << std::endl;
-    } else if (initial_balance < 10000.0) {
-        // For medium balances, use a moderate order size
-        order_size_ = 0.01;  // 0.01 BTC
-        std::cout << "Using moderate order size of " << order_size_ << " BTC due to initial balance of $" << initial_balance << std::endl;
-    } else {
-        // For large balances, use the default order size
-        order_size_ = 0.1;  // Default 0.1 BTC
-        std::cout << "Using default order size of " << order_size_ << " BTC due to initial balance of $" << initial_balance << std::endl;
-    }
+    std::cout << "======= INITIALIZING REAL TRADING =======" << std::endl;
+    
+    std::cout << "=======================================" << std::endl;
 }
 
 TradingBot::~TradingBot() {
@@ -90,48 +167,51 @@ TradingBot::~TradingBot() {
     delete pending_order_;
 }
 
-bool TradingBot::initialize(const std::string& exchange_url, const std::string& symbol, const std::string& model_path) {
-    // This method is now deprecated since we initialize in the constructor
-    // Keeping it for backward compatibility
-    std::cerr << "Warning: initialize() is deprecated. Use the constructor instead." << std::endl;
-    
-    // We already have initialized the bot in the constructor
-    // Just check if everything is set up correctly
-    if (!orderbook_fetcher_ || !trading_model_) {
-        std::cerr << "Trading bot not properly initialized" << std::endl;
-        return false;
-    }
-    
-    return true;
-}
-
 void TradingBot::start() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
     if (running_) {
         return;
     }
     
+    // Reset all flags
     running_ = true;
+    emergency_stop_ = false;
+    force_stop_ = false;
+    active_operations_ = 0;
+    websocket_connected_ = false;
+    
+    // Start the WebSocket thread
+    websocket_thread_ = std::thread([this]() {
+        try {
+            websocket_connected_ = true;
+            while (running_ && !emergency_stop_) {
+                if (!websocket_connected_ && !force_stop_) {
+                    orderbook_fetcher_->connect(exchange_url_, symbol_);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "WebSocket thread error: " << e.what() << std::endl;
+        }
+        websocket_connected_ = false;
+    });
+    
+    // Start the trading thread
     trading_thread_ = std::thread(&TradingBot::run, this);
 }
 
 void TradingBot::stop() {
-    if (!running_) {
-        return;
+    bool was_running = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        was_running = running_;
+        running_ = false;
     }
     
-    running_ = false;
-    
-    // Disconnect from exchange
-    if (orderbook_fetcher_) {
-        orderbook_fetcher_->disconnect();
-    }
-    
-    // Notify thread to exit
-    cv_.notify_all();
-    
-    // Join thread
-    if (trading_thread_.joinable()) {
-        trading_thread_.join();
+    if (was_running) {
+        cv_.notify_all();
+        shutdownThreads();
     }
 }
 
@@ -151,37 +231,6 @@ std::vector<TradeOrder> TradingBot::getOpenOrders() const {
 std::vector<TradeOrder> TradingBot::getFilledOrders() const {
     std::lock_guard<std::mutex> lock(orders_mutex_);
     return filled_orders_;
-}
-
-nlohmann::json TradingBot::getPerformanceMetrics() const {
-    std::lock_guard<std::mutex> lock(metrics_mutex_);
-    
-    nlohmann::json metrics;
-    metrics["avg_tick_to_trade"] = avg_tick_to_trade_.count();
-    metrics["trades_per_second"] = trades_per_second_.load();
-    metrics["total_trades"] = total_trades_;
-    metrics["successful_trades"] = successful_trades_;
-    metrics["success_rate"] = total_trades_ > 0 ? (double)successful_trades_ / total_trades_ * 100.0 : 0.0;
-    metrics["position"] = position_;
-    
-    // Ensure balance is always the initial balance plus realized P&L
-    std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
-    metrics["balance"] = initial_balance_ + realized_pnl_;
-    
-    // Add market volatility
-    metrics["market_volatility"] = calculateMarketVolatility();
-    
-    // Add USD volume metrics
-    {
-        std::lock_guard<std::mutex> volume_lock(volume_mutex_);
-        metrics["interval_usd_volume"] = interval_usd_volume_;
-        metrics["total_usd_volume"] = total_usd_volume_;
-        metrics["max_interval_usd_volume"] = max_interval_volume_;
-        metrics["avg_interval_usd_volume"] = avg_interval_volume_;
-        metrics["interval_count"] = interval_count_;
-    }
-    
-    return metrics;
 }
 
 nlohmann::json TradingBot::getPnLMetrics() const {
@@ -213,593 +262,749 @@ nlohmann::json TradingBot::getPnLMetrics() const {
 
 void TradingBot::run() {
     try {
-        while (running_) {
-            // Update order status
-            updateOrderStatus();
+        std::cout << "\n=== Trading Bot Status ===\n"
+                  << "Symbol: " << symbol_ << "\n"
+                  << "Initial Balance: " << initial_balance_ << " USDT\n"
+                  << "Stop Loss: " << stop_loss_percentage_ << "%\n"
+                  << "Max Drawdown: " << max_drawdown_percentage_ << "%\n"
+                  << "Position: " << position_ << "\n"
+                  << "=====================\n" << std::endl;
+                  
+        while (running_ && !emergency_stop_) {
+            // Increment active operations counter
+            ++active_operations_;
             
-            // Calculate performance metrics
-            calculatePerformanceMetrics();
+            try {
+                // Wait for a short time or until stop signal
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    if (cv_.wait_for(lock, std::chrono::milliseconds(100), 
+                        [this] { return !running_ || emergency_stop_; })) {
+                        break;
+                    }
+                }
+                
+                if (force_stop_) break;
+                
+                // Update order status with timeout
+                auto update_future = std::async(std::launch::async, [this]() {
+                    this->updateOrderStatus();
+                });
+                
+                if (update_future.wait_for(std::chrono::milliseconds(WEBSOCKET_TIMEOUT_MS)) 
+                    != std::future_status::ready) {
+                    std::cerr << "Warning: Order status update timed out" << std::endl;
+                }
+                
+                // Check risk limits
+                if (checkRiskLimits()) {
+                    std::cout << "⚠️ Risk limits reached. Stopping trading." << std::endl;
+                    emergency_stop_ = true;
+                    break;
+                }
+                
+                // Print trading status every few iterations
+                static int status_counter = 0;
+                if (++status_counter % 30 == 0) {  // Adjust frequency as needed
+                    std::cout << "\n--- Trading Status ---\n"
+                              << "Position: " << position_ << " | Balance: " << balance_ << "\n"
+                              << "P&L: Realized=" << realized_pnl_ << " | Unrealized=" << unrealized_pnl_ 
+                              << " | Total=" << total_pnl_ << "\n"
+                              << "Detailed P&L: Win/Loss=" << win_count_ << "/" << loss_count_
+                              << " | Win Rate=" << (win_count_ + loss_count_ > 0 ? 
+                                 (win_count_ * 100.0 / (win_count_ + loss_count_)) : 0) << "%"
+                              << " | Profit Factor=" << (avg_loss_ != 0.0 ? 
+                                 (avg_win_ * win_count_) / (std::abs(avg_loss_) * loss_count_) : 0.0)
+                              << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error in trading loop: " << e.what() << std::endl;
+            }
             
-            // Sleep for a short time
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            // Decrement active operations counter
+            --active_operations_;
         }
     } catch (const std::exception& e) {
-        std::cerr << "Error in trading thread: " << e.what() << std::endl;
+        std::cerr << "❌ Fatal trading error: " << e.what() << std::endl;
     }
+    
+    // Ensure active_operations is zero when exiting
+    active_operations_ = 0;
 }
 
 void TradingBot::onOrderbookUpdate(const Orderbook& orderbook) {
-    auto start_time = std::chrono::high_resolution_clock::now();
-    
-    // Get the current time
-    auto now = std::chrono::system_clock::now();
-    
-    // Check if we need to reset the interval USD volume (every 5 seconds)
-    {
-        std::lock_guard<std::mutex> volume_lock(volume_mutex_);
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_volume_reset_).count();
-        if (elapsed >= 5) {
-            // Update interval statistics
-            interval_count_++;
-            
-            // Update max interval volume
-            if (interval_usd_volume_ > max_interval_volume_) {
-                max_interval_volume_ = interval_usd_volume_;
-            }
-            
-            // Update average interval volume
-            avg_interval_volume_ = ((avg_interval_volume_ * (interval_count_ - 1)) + interval_usd_volume_) / interval_count_;
-            
-            // Reset interval volume
-            interval_usd_volume_ = 0.0;
-            last_volume_reset_ = now;
-        }
-    }
-    
-    // Update unrealized P&L based on current position and price
-    if (position_ != 0.0) {
+    try {
+        // Record the update time
+        auto now = std::chrono::high_resolution_clock::now();
+        last_update_time_ = now;
+        
+        // Extract features from the orderbook
+        std::vector<float> features;
+        features.reserve(50); // Pre-allocate space for 50 features
+        
+        // Add basic features
+        double best_bid = orderbook.getBestBid();
+        double best_ask = orderbook.getBestAsk();
         double mid_price = orderbook.getMidPrice();
+        double spread = orderbook.getSpread();
         
-        std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
+        std::cout << "\n📊 Orderbook Update:"
+                  << "\n- Best Bid: " << best_bid
+                  << "\n- Best Ask: " << best_ask
+                  << "\n- Mid Price: " << mid_price
+                  << "\n- Spread: " << spread << std::endl;
         
-        // Calculate current value of position
-        current_value_ = position_ * mid_price;
+        features.push_back(static_cast<float>(best_bid));
+        features.push_back(static_cast<float>(best_ask));
+        features.push_back(static_cast<float>(mid_price));
+        features.push_back(static_cast<float>(spread));
         
-        // Calculate unrealized P&L
-        unrealized_pnl_ = current_value_ - entry_value_;
+        // Add bid/ask imbalance
+        auto bids = orderbook.getBids();
+        auto asks = orderbook.getAsks();
         
-        // Store uncapped unrealized P&L for analysis
-        uncapped_unrealized_pnl_ = unrealized_pnl_;
+        double bid_volume = 0.0;
+        double ask_volume = 0.0;
         
-        // Scale unrealized P&L to be relative to initial balance for risk management
-        double scaled_unrealized_pnl = unrealized_pnl_;
-        
-        // Cap unrealized P&L at 50% of initial balance for risk management
-        if (std::abs(unrealized_pnl_) > initial_balance_ * 0.5) {
-            scaled_unrealized_pnl = (unrealized_pnl_ > 0) ? 
-                initial_balance_ * 0.5 : -initial_balance_ * 0.5;
-            std::cout << "Warning: Unrealized P&L exceeds 50% of initial balance. Scaling for risk management." << std::endl;
+        for (const auto& bid : bids) {
+            bid_volume += bid.quantity;
         }
         
-        // Update total P&L with scaled value for risk management
-        total_pnl_ = realized_pnl_ + scaled_unrealized_pnl;
+        for (const auto& ask : asks) {
+            ask_volume += ask.quantity;
+        }
         
-        // Update uncapped total P&L for analysis
-        uncapped_total_pnl_ = realized_pnl_ + uncapped_unrealized_pnl_;
-    }
-    
-    // Extract features and make prediction
-    double prediction = trading_model_->predict(orderbook);
-    
-    // Process the prediction
-    processModelPrediction(prediction, orderbook);
-    
-    // Update performance metrics
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
-    
-    {
-        std::lock_guard<std::mutex> lock(metrics_mutex_);
+        double imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume);
+        features.push_back(static_cast<float>(imbalance));
         
-        // Update tick-to-trade latency
-        if (avg_tick_to_trade_.count() == 0) {
-            avg_tick_to_trade_ = duration;
+        std::cout << "📈 Market Metrics:"
+                  << "\n- Bid Volume: " << bid_volume
+                  << "\n- Ask Volume: " << ask_volume
+                  << "\n- Imbalance: " << imbalance << std::endl;
+        
+        // Add market volatility
+        double volatility = calculateMarketVolatility();
+        features.push_back(static_cast<float>(volatility));
+        
+        // Add position as a feature
+        features.push_back(static_cast<float>(position_));
+        
+        // Add bid prices and quantities (10 levels)
+        for (size_t i = 0; i < 10; i++) {
+            if (i < bids.size()) {
+                features.push_back(static_cast<float>(bids[i].price));
+                features.push_back(static_cast<float>(bids[i].quantity));
+            } else {
+                features.push_back(0.0f);
+                features.push_back(0.0f);
+            }
+        }
+        
+        // Add ask prices and quantities (10 levels)
+        for (size_t i = 0; i < 10; i++) {
+            if (i < asks.size()) {
+                features.push_back(static_cast<float>(asks[i].price));
+                features.push_back(static_cast<float>(asks[i].quantity));
+            } else {
+                features.push_back(0.0f);
+                features.push_back(0.0f);
+            }
+        }
+        
+        // Pad remaining features
+        while (features.size() < 50) {
+            features.push_back(0.0f);
+        }
+        
+        // Get prediction from the model
+        double prediction;
+        try {
+            prediction = trading_model_->predict(features);
+        } catch (const std::exception& e) {
+            std::cerr << "❌ Model prediction error: " << e.what() << std::endl;
+            std::cerr << "Skipping trade due to model error" << std::endl;
+            return;
+        }
+        
+        // Validate prediction
+        if (std::isnan(prediction)) {
+            std::cerr << "❌ Model returned NaN prediction - skipping trade" << std::endl;
+            return;
+        }
+        
+        std::string direction;
+        if (prediction > 0.51) {
+            direction = "Bullish";
+        } else if (prediction < 0.49) {
+            direction = "Bearish";
         } else {
-            avg_tick_to_trade_ = std::chrono::nanoseconds(
-                (avg_tick_to_trade_.count() * 9 + duration.count()) / 10
-            );
+            direction = "Neutral";
         }
         
-        // Update trades per second
-        auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(now - last_metrics_update_).count();
-        if (elapsed_seconds >= 1) {
-            trades_per_second_ = total_trades_ / std::max(1UL, static_cast<unsigned long>(elapsed_seconds));
-        }
-    }
-    
-    // Update price history for volatility calculation
-    {
-        std::lock_guard<std::mutex> lock(price_history_mutex_);
+        std::cout << "\n🤖 Model Prediction: " << std::fixed << std::setprecision(4) << prediction 
+                  << " (" << direction << ")" << std::endl;
         
-        price_history_.push_back(orderbook.getMidPrice());
-        if (price_history_.size() > price_history_length_) {
-            price_history_.erase(price_history_.begin());
+        // Update account info before processing prediction
+        if (api_trader_) {
+            auto account_info = api_trader_->getAccountInfo();
+            if (account_info.contains("availableBalance")) {
+                balance_ = std::stod(account_info["availableBalance"].get<std::string>());
+                std::cout << "💰 Updated Balance: " << balance_ << " USDT" << std::endl;
+            }
         }
+        
+        // Only process valid predictions
+        if (prediction >= 0.0 && prediction <= 1.0) {
+        processModelPrediction(prediction, orderbook);
+        } else {
+            std::cerr << "❌ Invalid prediction value: " << prediction << " - must be between 0 and 1" << std::endl;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "❌ Error processing orderbook update: " << e.what() << std::endl;
     }
-    
-    // Store the last update time
-    last_update_time_ = std::chrono::high_resolution_clock::now();
 }
 
 void TradingBot::processModelPrediction(double prediction, const Orderbook& orderbook_snapshot) {
     std::lock_guard<std::mutex> lock(mutex_);
     
-    // Check risk limits before making trading decisions
-    bool risk_limits_exceeded = checkRiskLimits();
-    
-    // If stop loss has been triggered, don't place new orders
-    if (stop_loss_triggered_) {
-        std::cout << "Stop loss triggered. Not placing new orders." << std::endl;
-        return;
-    }
-    
-    // If risk limits exceeded but not stop loss triggered, close current position
-    if (risk_limits_exceeded) {
-        std::cout << "Risk limits exceeded. Closing current position." << std::endl;
-        // Close current position
-        if (position_ > 0) {
-            // Close long position
-            TradeOrder order(TradeOrder::Type::SELL, orderbook_snapshot.getMidPrice(), std::abs(position_));
-            placeOrder(order);
-        } else if (position_ < 0) {
-            // Close short position
-            TradeOrder order(TradeOrder::Type::BUY, orderbook_snapshot.getMidPrice(), std::abs(position_));
-            placeOrder(order);
+    // Update price history for volatility calculation
+    {
+        std::lock_guard<std::mutex> lock(price_history_mutex_);
+        double mid_price = orderbook_snapshot.getMidPrice();
+        price_history_.push_back(mid_price);
+        if (price_history_.size() > price_history_length_) {
+        price_history_.erase(price_history_.begin());
         }
+    }
+    
+    // Check risk limits before placing any orders
+    if (checkRiskLimits()) {
+        std::cout << "⚠️  Risk limits exceeded - no new orders" << std::endl;
         return;
     }
     
-    // Calculate market volatility
-    double volatility = calculateMarketVolatility();
+    const double MIN_NOTIONAL = 100.0;  // Minimum notional value in USDT
+    const double TICK_SIZE = 0.1;       // Price tick size for BTCUSDT
+    const double MIN_QTY = 0.001;       // Minimum quantity for BTCUSDT
     
-    // Adaptive threshold based on volatility
-    double buy_threshold = 0.5 + (volatility * 0.2);  // Higher threshold in volatile markets
-    double sell_threshold = -0.5 - (volatility * 0.2);
+    // Calculate available margin considering leverage
+    double available_margin = balance_ * leverage_;
     
-    // Check if spread is too small
-    double spread = orderbook_snapshot.getSpread();
-    if (spread < min_spread_) {
-        // Skip trading when spread is too small
-        return;
+    // Use a fixed percentage of available margin per trade (e.g., 20%)
+    double max_trade_margin = available_margin * 0.2;
+    
+    std::cout << "\n💫 Signal Analysis:"
+              << "\n- Raw Prediction: " << prediction
+              << "\n- Available Margin: " << available_margin << " USDT"
+              << "\n- Max Trade Margin: " << max_trade_margin << " USDT"
+              << "\n- Current Position: " << position_ << " BTC" << std::endl;
+    
+    // Get current market price from orderbook
+    double market_price;
+    if (prediction > 0.51) {  // For buy orders, use best ask
+        market_price = std::ceil(orderbook_snapshot.getBestAsk() / TICK_SIZE) * TICK_SIZE;
+    } else if (prediction < 0.49) {  // For sell orders, use best bid
+        market_price = std::floor(orderbook_snapshot.getBestBid() / TICK_SIZE) * TICK_SIZE;
+    } else {
+        // For neutral predictions, use mid price
+        market_price = std::round(orderbook_snapshot.getMidPrice() / TICK_SIZE) * TICK_SIZE;
     }
     
-    // Get best bid and ask prices
-    double best_bid = orderbook_snapshot.getBestBid();
-    double best_ask = orderbook_snapshot.getBestAsk();
+    // Calculate minimum quantity needed for MIN_NOTIONAL
+    double min_quantity = std::ceil((MIN_NOTIONAL / market_price) * 1000.0) / 1000.0;
     
-    // Increment total trades counter
-    total_trades_++;
+    // Calculate maximum quantity based on available margin
+    double max_quantity = std::floor((max_trade_margin / market_price) * 1000.0) / 1000.0;
     
-    // Place orders based on prediction
-    if (prediction > buy_threshold && position_ < max_position_) {
-        // Buy signal
-        double order_price = best_ask;  // Buy at ask price
-        
-        // Calculate position size
-        double old_position = position_;
-        
-        // Place buy order
-        TradeOrder order(TradeOrder::Type::BUY, order_price, order_size_);
-        if (placeOrder(order)) {
-            // Update position
-            position_ += order_size_;
+    // Use the minimum between max_quantity and min_quantity, but ensure it's at least MIN_QTY
+    double order_quantity = std::max(MIN_QTY, std::min(max_quantity, min_quantity));
+    
+    std::cout << "📊 Order Calculation:"
+              << "\n- Market Price: " << market_price
+              << "\n- Min Quantity: " << min_quantity
+              << "\n- Max Quantity: " << max_quantity
+              << "\n- Final Quantity: " << order_quantity << std::endl;
+    
+    // Normalize prediction to [0,1]
+    double normalized_prediction = std::min(1.0, std::max(0.0, prediction));
+    double signal_strength = std::abs(normalized_prediction - 0.5) * 2.0;  // Convert to 0-1 scale
+    
+    // Strong signals only (>60% confidence)
+    if (signal_strength > 0.2) {  // Requires at least 60% confidence
+        if (normalized_prediction > 0.51) {  // BUY Signal
+            std::cout << "\n🔵 BUY Signal [Confidence: " << std::fixed << std::setprecision(2) 
+                      << signal_strength * 100 << "%]" << std::endl;
             
-            // Update entry value using average price
-            if (old_position == 0.0) {
-                // New position
-                entry_value_ = position_ * order_price;
-            } else if (old_position > 0.0 && position_ > old_position) {
-                // Adding to long position
-                entry_value_ = entry_value_ + (order_size_ * order_price);
-            } else if (old_position < 0.0 && position_ > old_position) {
-                // Reducing short position
-                double remaining_ratio = std::abs(position_) / std::abs(old_position);
-                entry_value_ = entry_value_ * remaining_ratio;
-                
-                // Calculate realized P&L
-                double closed_size = order_size_ - (position_ - old_position);
-                double avg_entry_price = std::abs(entry_value_ / old_position);
-                double realized_pnl = closed_size * (avg_entry_price - order_price);
-                
-                // Update realized P&L
+            // Check if we have enough margin for the trade
+            double notional_value = order_quantity * market_price;
+            if (notional_value < MIN_NOTIONAL) {
+                std::cerr << "❌ Insufficient margin - Required: " << MIN_NOTIONAL 
+                          << " USDT, Available: " << notional_value << " USDT" << std::endl;
+                return;
+            }
+            
+            // Place the buy order
+            TradeOrder order(TradeOrder::Type::BUY, market_price, order_quantity);
+            std::cout << "📝 Placing BUY order:" << std::endl
+                      << "- Price: " << market_price << std::endl
+                      << "- Quantity: " << order_quantity << std::endl
+                      << "- Notional: " << notional_value << " USDT" << std::endl;
+                      
+            if (placeOrder(order)) {
                 std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
-                realized_pnl_ += realized_pnl;
+                entry_value_ = notional_value;
+                std::cout << "✅ BUY order placed successfully" << std::endl;
             }
             
-            // Update current value
-            current_value_ = position_ * order_price;
+        } else if (normalized_prediction < 0.49) {  // SELL Signal
+            std::cout << "\n🔴 SELL Signal [Confidence: " << std::fixed << std::setprecision(2) 
+                      << signal_strength * 100 << "%]" << std::endl;
             
-            // Update unrealized P&L
-            std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
-            unrealized_pnl_ = current_value_ - entry_value_;
-            
-            // Scale unrealized P&L to be relative to initial balance for risk management
-            double scaled_unrealized_pnl = unrealized_pnl_;
-            if (std::abs(unrealized_pnl_) > initial_balance_ * 0.5) {
-                scaled_unrealized_pnl = (unrealized_pnl_ > 0) ? 
-                    initial_balance_ * 0.5 : -initial_balance_ * 0.5;
+            double notional_value = order_quantity * market_price;
+            if (notional_value < MIN_NOTIONAL) {
+                std::cerr << "❌ Insufficient margin - Required: " << MIN_NOTIONAL 
+                          << " USDT, Available: " << notional_value << " USDT" << std::endl;
+                return;
             }
             
-            // Update total P&L
-            total_pnl_ = realized_pnl_ + scaled_unrealized_pnl;
-            
-            // Update USD volume
-            std::lock_guard<std::mutex> volume_lock(volume_mutex_);
-            double usd_volume = order_size_ * order_price;
-            interval_usd_volume_ += usd_volume;
-            total_usd_volume_ += usd_volume;
-            
-            // Increment successful trades counter
-            successful_trades_++;
-        }
-    } else if (prediction < sell_threshold && position_ > -max_position_) {
-        // Sell signal
-        double order_price = best_bid;  // Sell at bid price
-        
-        // Calculate position size
-        double old_position = position_;
-        
-        // Place sell order
-        TradeOrder order(TradeOrder::Type::SELL, order_price, order_size_);
+            TradeOrder order(TradeOrder::Type::SELL, market_price, order_quantity);
+            std::cout << "📝 Placing SELL order:" << std::endl
+                      << "- Price: " << market_price << std::endl
+                      << "- Quantity: " << order_quantity << std::endl
+                      << "- Notional: " << notional_value << " USDT" << std::endl;
+                      
         if (placeOrder(order)) {
-            // Update position
-            position_ -= order_size_;
-            
-            // Update entry value using average price
-            if (old_position == 0.0) {
-                // New position
-                entry_value_ = position_ * order_price;
-            } else if (old_position < 0.0 && position_ < old_position) {
-                // Adding to short position
-                entry_value_ = entry_value_ + (order_size_ * order_price);
-            } else if (old_position > 0.0 && position_ < old_position) {
-                // Reducing long position
-                double remaining_ratio = std::abs(position_) / std::abs(old_position);
-                entry_value_ = entry_value_ * remaining_ratio;
-                
-                // Calculate realized P&L
-                double closed_size = order_size_ - (old_position - position_);
-                double avg_entry_price = entry_value_ / old_position;
-                double realized_pnl = closed_size * (order_price - avg_entry_price);
-                
-                // Update realized P&L
                 std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
-                realized_pnl_ += realized_pnl;
+                entry_value_ = notional_value;
+                std::cout << "✅ SELL order placed successfully" << std::endl;
             }
-            
-            // Update current value
-            current_value_ = position_ * order_price;
-            
-            // Update unrealized P&L
-            std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
-            unrealized_pnl_ = current_value_ - entry_value_;
-            
-            // Scale unrealized P&L to be relative to initial balance for risk management
-            double scaled_unrealized_pnl = unrealized_pnl_;
-            if (std::abs(unrealized_pnl_) > initial_balance_ * 0.5) {
-                scaled_unrealized_pnl = (unrealized_pnl_ > 0) ? 
-                    initial_balance_ * 0.5 : -initial_balance_ * 0.5;
-            }
-            
-            // Update total P&L
-            total_pnl_ = realized_pnl_ + scaled_unrealized_pnl;
-            
-            // Update USD volume
-            std::lock_guard<std::mutex> volume_lock(volume_mutex_);
-            double usd_volume = order_size_ * order_price;
-            interval_usd_volume_ += usd_volume;
-            total_usd_volume_ += usd_volume;
-            
-            // Increment successful trades counter
-            successful_trades_++;
+        } else {
+            std::cout << "\n⚪ NEUTRAL Signal - No trade" << std::endl;
         }
+    } else {
+        std::cout << "\n⚪ Weak Signal [Confidence: " << std::fixed << std::setprecision(2) 
+                  << signal_strength * 100 << "%] - No trade" << std::endl;
     }
 }
 
 bool TradingBot::placeOrder(const TradeOrder& order) {
-    // In a real implementation, this would send the order to an exchange
-    // For simulation, we'll just add it to our open orders
-    
-    std::lock_guard<std::mutex> lock(orders_mutex_);
-    open_orders_.push_back(order);
-    
-    // For simulation, we'll assume the order is filled immediately
-    auto& filled_order = open_orders_.back();
-    filled_order.status = TradeOrder::Status::FILLED;
-    filled_order.filled_quantity = filled_order.quantity;
-    
-    // Update position
-    if (filled_order.type == TradeOrder::Type::BUY) {
-        position_ += filled_order.quantity;
-    } else {
-        position_ -= filled_order.quantity;
+    // If we have an API trader, use it to place the order
+    if (api_trader_) {
+        std::cout << "Placing order via API trader: " 
+                  << (order.type == TradeOrder::Type::BUY ? "BUY" : "SELL") 
+                  << " " << order.quantity << " at " << order.price << std::endl;
+        
+        // Place the order using the API trader, passing the symbol
+        if (api_trader_->placeOrder(order, symbol_)) {
+            std::cout << "Order placed successfully via API" << std::endl;
+            
+            // Add to open orders
+            {
+                std::lock_guard<std::mutex> lock(orders_mutex_);
+                open_orders_.push_back(order);
+            }
+            
+            return true;
+        } else {
+            std::cerr << "Failed to place order via API" << std::endl;
+            return false;
+        }
     }
     
-    // Update USD volume tracking
-    {
-        std::lock_guard<std::mutex> volume_lock(volume_mutex_);
-        double order_usd_volume = filled_order.price * filled_order.quantity;
-        interval_usd_volume_ += order_usd_volume;
-        total_usd_volume_ += order_usd_volume;
-    }
+    // If we don't have an API trader, just simulate the order
+    std::cout << "No API trader available, simulating order" << std::endl;
     
-    // Move to filled orders
-    filled_orders_.push_back(filled_order);
-    open_orders_.pop_back();
-    
-    // Update total trades counter
+    // Add to open orders
     {
-        std::lock_guard<std::mutex> lock(metrics_mutex_);
-        total_trades_++;
+        std::lock_guard<std::mutex> lock(orders_mutex_);
+        open_orders_.push_back(order);
     }
     
     return true;
 }
 
 bool TradingBot::cancelOrder(const std::string& order_id) {
-    try {
-        // In a real implementation, this would send a cancel request to the exchange
-        // For simulation, we just remove it from our open orders
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+    if (api_trader_) {
+        // Use the API trader for real trading
+        std::cout << "REAL TRADE: Canceling order " << order_id << std::endl;
+        bool success = api_trader_->cancelOrder(order_id, symbol_);
         
-        // Find the order
-        auto it = std::find_if(open_orders_.begin(), open_orders_.end(),
-            [&order_id](const TradeOrder& o) { return o.id == order_id; });
-        
-        if (it == open_orders_.end()) {
-            return false;
+        if (success) {
+            std::cout << "REAL TRADE: Order canceled successfully" << std::endl;
+        } else {
+            std::cerr << "REAL TRADE: Failed to cancel order" << std::endl;
         }
         
-        // Update the order status
-        it->status = TradeOrder::Status::CANCELED;
-        
-        // Move the order to filled orders
-        filled_orders_.push_back(*it);
-        
-        // Remove the order from open orders
-        open_orders_.erase(it);
-        
-        // Log the cancellation
-        std::cout << "Canceled order: " << order_id << std::endl;
-        
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Error canceling order: " << e.what() << std::endl;
+        return success;
+    } else {
+        std::cerr << "ERROR: API trader not initialized" << std::endl;
         return false;
     }
 }
 
 void TradingBot::updateOrderStatus() {
+    if (!api_trader_) return;
+    
     try {
-        // In a real implementation, this would query the exchange for order status
-        // For simulation, we just simulate order fills
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+        // Get account information
+        auto account_info = api_trader_->getAccountInfo();
         
-        // Get the latest orderbook
-        Orderbook orderbook = orderbook_fetcher_->getLatestOrderbook();
-        double current_price = orderbook.getMidPrice();
+        // Update balance and positions
+        std::lock_guard<std::mutex> lock(mutex_);
         
-        // Process each open order
-        auto it = open_orders_.begin();
-        while (it != open_orders_.end()) {
-            // Simulate order fill
-            bool filled = false;
-            
-            if (it->type == TradeOrder::Type::BUY) {
-                // Buy order fills if the best ask is below or equal to the order price
-                double best_ask = orderbook.getBestAsk();
-                filled = best_ask > 0 && best_ask <= it->price;
-            } else {
-                // Sell order fills if the best bid is above or equal to the order price
-                double best_bid = orderbook.getBestBid();
-                filled = best_bid > 0 && best_bid >= it->price;
-            }
-            
-            if (filled) {
-                // Update the order status
-                it->status = TradeOrder::Status::FILLED;
-                it->filled_quantity = it->quantity;
-                
-                // Calculate P&L for this order
-                calculatePnL(*it, current_price);
-                
-                // Move the order to filled orders
-                filled_orders_.push_back(*it);
-                
-                // Remove the order from open orders
-                it = open_orders_.erase(it);
-                
-                // Log the fill
-                std::cout << "Order filled: " << it->id << std::endl;
-            } else {
-                ++it;
+        // Update balance from available balance
+        if (account_info.contains("availableBalance")) {
+            balance_ = std::stod(account_info["availableBalance"].get<std::string>());
+        }
+        
+        // Update position from positions array
+        position_ = 0.0;
+        if (account_info.contains("positions")) {
+            for (const auto& pos : account_info["positions"]) {
+                if (pos["symbol"] == symbol_) {
+                    position_ = std::stod(pos["positionAmt"].get<std::string>());
+                    
+                    // Update entry price and current value
+                    double entry_price = std::stod(pos["entryPrice"].get<std::string>());
+                    double mark_price = std::stod(pos["markPrice"].get<std::string>());
+                    entry_value_ = std::abs(position_) * entry_price;
+                    current_value_ = std::abs(position_) * mark_price;
+                    
+                    // Update unrealized PnL
+                    std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
+                    unrealized_pnl_ = std::stod(pos["unrealizedPnl"].get<std::string>());
+                    total_pnl_ = realized_pnl_ + unrealized_pnl_;
+                    break;
+                }
             }
         }
+        
+        // Get open orders
+        auto open_orders = api_trader_->getOpenOrders(symbol_);
+        
+        // Update open orders
+        std::lock_guard<std::mutex> orders_lock(orders_mutex_);
+        open_orders_ = open_orders;
+        
     } catch (const std::exception& e) {
         std::cerr << "Error updating order status: " << e.what() << std::endl;
-    }
-}
-
-void TradingBot::calculatePerformanceMetrics() {
-    std::lock_guard<std::mutex> lock(metrics_mutex_);
-    
-    // Calculate time since last update
-    auto now = std::chrono::system_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_metrics_update_);
-    
-    // Only update if at least 1 second has passed
-    if (elapsed.count() >= 1) {
-        // Calculate trades per second
-        // Make sure both arguments to std::max have the same type
-        uint64_t elapsed_seconds = static_cast<uint64_t>(elapsed.count());
-        
-        // Ensure TPS is calculated correctly
-        if (elapsed_seconds > 0) {
-            trades_per_second_ = total_trades_ / elapsed_seconds;
-        } else {
-            trades_per_second_ = total_trades_;  // If less than 1 second has passed
-        }
-        
-        // Reset timer
-        last_metrics_update_ = now;
-    }
-    
-    // Update USD volume metrics
-    std::lock_guard<std::mutex> volume_lock(volume_mutex_);
-    
-    // Reset interval volume every 5 seconds
-    auto volume_elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_volume_reset_);
-    if (volume_elapsed.count() >= 5) {
-        // Update interval statistics
-        interval_count_++;
-        
-        // Update max interval volume
-        max_interval_volume_ = std::max(max_interval_volume_, interval_usd_volume_);
-        
-        // Update average interval volume
-        avg_interval_volume_ = ((avg_interval_volume_ * (interval_count_ - 1)) + interval_usd_volume_) / interval_count_;
-        
-        // Reset interval volume
-        interval_usd_volume_ = 0.0;
-        
-        // Reset timer
-        last_volume_reset_ = now;
     }
 }
 
 double TradingBot::calculateMarketVolatility() const {
     std::lock_guard<std::mutex> lock(price_history_mutex_);
     
-    // If we don't have enough price history, return a default value
     if (price_history_.size() < 2) {
-        return 0.01; // Default low volatility
+        return 0.0;
     }
     
-    // Calculate mean price
-    double sum = std::accumulate(price_history_.begin(), price_history_.end(), 0.0);
-    double mean = sum / price_history_.size();
+    // Calculate returns
+    std::vector<double> returns;
+    returns.reserve(price_history_.size() - 1);
     
-    // Calculate variance
-    double variance = 0.0;
-    for (const auto& price : price_history_) {
-        variance += std::pow(price - mean, 2);
+    for (size_t i = 1; i < price_history_.size(); ++i) {
+        double ret = (price_history_[i] - price_history_[i - 1]) / price_history_[i - 1];
+        returns.push_back(ret);
     }
-    variance /= price_history_.size();
     
-    // Calculate standard deviation (volatility)
-    double volatility = std::sqrt(variance);
+    // Calculate standard deviation of returns
+    double mean = std::accumulate(returns.begin(), returns.end(), 0.0) / returns.size();
     
-    // Normalize by mean price to get relative volatility
-    return volatility / (mean + 1e-10);
+    double sq_sum = std::inner_product(returns.begin(), returns.end(), returns.begin(), 0.0,
+        std::plus<>(), [mean](double x, double y) { return (x - mean) * (y - mean); });
+    
+    double std_dev = std::sqrt(sq_sum / returns.size());
+    
+    return std_dev;
 }
 
 void TradingBot::calculatePnL(const TradeOrder& filled_order, double current_price) {
     std::lock_guard<std::mutex> lock(pnl_mutex_);
+    
+    // Calculate P&L for this trade
+    double trade_pnl = 0.0;
+    
+    if (filled_order.type == TradeOrder::Type::BUY) {
+        // For a buy, P&L is positive if current price > entry price
+        trade_pnl = (current_price - filled_order.entry_price) * filled_order.filled_quantity;
+    } else {
+        // For a sell, P&L is positive if entry price > current price
+        trade_pnl = (filled_order.entry_price - current_price) * filled_order.filled_quantity;
+    }
+    
+    // Update realized P&L
+    realized_pnl_ += trade_pnl;
+    
+    // Update win/loss statistics
+    if (trade_pnl > 0.0) {
+        win_count_++;
+        largest_win_ = std::max(largest_win_, trade_pnl);
+        avg_win_ = (avg_win_ * (win_count_ - 1) + trade_pnl) / win_count_;
+    } else if (trade_pnl < 0.0) {
+        loss_count_++;
+        largest_loss_ = std::min(largest_loss_, trade_pnl);
+        avg_loss_ = (avg_loss_ * (loss_count_ - 1) + trade_pnl) / loss_count_;
+    }
+    
+    // Update total P&L
+    total_pnl_ = realized_pnl_ + unrealized_pnl_;
+    uncapped_total_pnl_ = realized_pnl_ + uncapped_unrealized_pnl_;
     
     // Calculate trade duration
     auto now = std::chrono::system_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - filled_order.timestamp);
     
     // Update average trade duration
-    if (filled_orders_.empty()) {
-        avg_trade_duration_ms_ = duration.count();
-    } else {
-        avg_trade_duration_ms_ = (avg_trade_duration_ms_ * filled_orders_.size() + duration.count()) / 
-                                (filled_orders_.size() + 1);
+    double total_trades = win_count_ + loss_count_;
+    if (total_trades > 0) {
+        avg_trade_duration_ms_ = (avg_trade_duration_ms_ * (total_trades - 1) + duration.count()) / total_trades;
+    }
+}
+
+bool TradingBot::checkRiskLimits() {
+    // Check stop loss
+    if (unrealized_pnl_ < -stop_loss_percentage_ * initial_balance_ / 100.0) {
+        std::cout << "🛑 Stop loss triggered:\n"
+                  << "  Unrealized P&L: " << unrealized_pnl_ << " USDT\n"
+                  << "  Threshold: " << -stop_loss_percentage_ * initial_balance_ / 100.0 << " USDT"
+                  << std::endl;
+        stop_loss_triggered_ = true;
+        return true;
     }
     
-    // Calculate trade P&L
-    double trade_pnl = 0.0;
-    if (filled_order.type == TradeOrder::Type::BUY) {
-        // For a buy order, P&L is current price - entry price
-        trade_pnl = (current_price - filled_order.entry_price) * filled_order.quantity;
-    } else {
-        // For a sell order, P&L is entry price - current price
-        trade_pnl = (filled_order.entry_price - current_price) * filled_order.quantity;
+    // Check max drawdown
+    if (total_pnl_ < -max_drawdown_percentage_ * initial_balance_ / 100.0) {
+        std::cout << "📉 Max drawdown triggered:\n"
+                  << "  Total P&L: " << total_pnl_ << " USDT\n"
+                  << "  Threshold: " << -max_drawdown_percentage_ * initial_balance_ / 100.0 << " USDT"
+                  << std::endl;
+        return true;
     }
     
-    // Update win/loss statistics
-    if (trade_pnl > 0) {
-        // Win
-        win_count_++;
-        largest_win_ = std::max(largest_win_, trade_pnl);
-        avg_win_ = (avg_win_ * (win_count_ - 1) + trade_pnl) / win_count_;
-    } else if (trade_pnl < 0) {
-        // Loss
-        loss_count_++;
-        largest_loss_ = std::min(largest_loss_, trade_pnl);
-        avg_loss_ = (avg_loss_ * (loss_count_ - 1) + trade_pnl) / loss_count_;
-    }
-    
-    // Update balance
-    balance_ += trade_pnl;
+    return false;
 }
 
 void TradingBot::setStopLossPercentage(double percentage) {
     std::lock_guard<std::mutex> lock(mutex_);
     stop_loss_percentage_ = percentage;
-    std::cout << "Stop loss percentage set to " << percentage << "%" << std::endl;
+    std::cout << "Stop loss percentage set to " << stop_loss_percentage_ << "%" << std::endl;
 }
 
 void TradingBot::setMaxDrawdownPercentage(double percentage) {
     std::lock_guard<std::mutex> lock(mutex_);
     max_drawdown_percentage_ = percentage;
-    std::cout << "Max drawdown percentage set to " << percentage << "%" << std::endl;
+    std::cout << "Max drawdown percentage set to " << max_drawdown_percentage_ << "%" << std::endl;
 }
 
-bool TradingBot::checkRiskLimits() {
-    // Check if stop loss has already been triggered
-    if (stop_loss_triggered_) {
-        return true;
-    }
+bool TradingBot::emergencyStop(int timeout_ms) {
+    std::cout << "🚨 EMERGENCY STOP INITIATED" << std::endl;
     
-    // Calculate current drawdown
-    double initial_value = initial_balance_;
-    double current_value = initial_balance_ + total_pnl_;
-    double drawdown_percentage = 0.0;
+    // Set emergency stop flag
+    emergency_stop_ = true;
+    running_ = false;
+    cv_.notify_all();
     
-    if (initial_value > 0) {
-        drawdown_percentage = ((initial_value - current_value) / initial_value) * 100.0;
-    }
-    
-    // Check if max drawdown has been reached
-    if (drawdown_percentage >= max_drawdown_percentage_) {
-        std::cout << "WARNING: Max drawdown of " << max_drawdown_percentage_ 
-                  << "% reached. Current drawdown: " << drawdown_percentage 
-                  << "%. Stopping trading." << std::endl;
-        stop_loss_triggered_ = true;
-        return true;
-    }
-    
-    // Check individual trade stop loss - use a more reasonable calculation
-    if (unrealized_pnl_ < 0) {
-        // Calculate loss percentage relative to initial balance instead of entry value
-        // This prevents unrealistic loss percentages when trading high-priced assets
-        double loss_percentage = (std::abs(unrealized_pnl_) / initial_balance_) * 100.0;
+    try {
+        // Step 1: Try to cancel all orders with timeout
+        std::cout << "1️⃣ Attempting to cancel all orders..." << std::endl;
+        auto cancel_start = std::chrono::steady_clock::now();
+        bool orders_cancelled = false;
         
-        // Only trigger stop loss if loss percentage is significant relative to initial balance
-        // and if we have a significant position, and if the loss percentage is at least 2x the stop loss percentage
-        if (loss_percentage >= stop_loss_percentage_ * 2 && std::abs(position_) > 0.01) {
-            std::cout << "WARNING: Stop loss of " << stop_loss_percentage_ 
-                      << "% reached. Current loss: " << loss_percentage 
-                      << "%. Closing position." << std::endl;
-            // We don't set stop_loss_triggered_ to true here because we want to allow new trades
-            // after closing the current losing position
-            return true;
+        std::future<bool> cancel_future = std::async(std::launch::async, [this]() {
+            return cancelAllOrders();
+        });
+        
+        if (cancel_future.wait_for(std::chrono::milliseconds(ORDER_CANCEL_TIMEOUT_MS)) == std::future_status::ready) {
+            orders_cancelled = cancel_future.get();
+        }
+        
+        if (orders_cancelled) {
+            std::cout << "✅ All orders cancelled successfully" << std::endl;
+        } else {
+            std::cout << "⚠️ Failed to cancel all orders or timed out" << std::endl;
+        }
+        
+        // Step 2: Close WebSocket connection
+        std::cout << "2️⃣ Closing WebSocket connection..." << std::endl;
+        closeWebSocket();
+        
+        // Step 3: Wait for threads to finish gracefully
+        std::cout << "3️⃣ Waiting for threads to finish..." << std::endl;
+        bool graceful_shutdown = waitForThreads(timeout_ms);
+        
+        if (!graceful_shutdown) {
+            std::cout << "⚠️ Graceful shutdown timed out, forcing stop..." << std::endl;
+            force_stop_ = true;
+            shutdownThreads(true);
+            return false;
+        }
+        
+        std::cout << "✅ Emergency stop completed successfully" << std::endl;
+        return true;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "❌ Error during emergency stop: " << e.what() << std::endl;
+        force_stop_ = true;
+        shutdownThreads(true);
+        return false;
+    }
+}
+
+void TradingBot::shutdownThreads(bool force) {
+    // Set flags to stop threads
+    running_ = false;
+    if (force) {
+        force_stop_ = true;
+        emergency_stop_ = true;
+    }
+    
+    // Notify any waiting threads
+    cv_.notify_all();
+    
+    // Close WebSocket first
+    closeWebSocket();
+    
+    // Wait for threads to finish
+    if (websocket_thread_.joinable()) {
+        try {
+            // Create a timeout mechanism for websocket thread
+            auto start_time = std::chrono::high_resolution_clock::now();
+            bool joined = false;
+            
+            // Try to join with a timeout
+            std::thread temp_thread([this, &joined]() { 
+                websocket_thread_.join(); 
+                joined = true;
+            });
+            
+            // Wait for the join to complete or timeout
+            while (!joined) {
+                auto current_time = std::chrono::high_resolution_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    current_time - start_time).count();
+                    
+                if (elapsed > THREAD_JOIN_TIMEOUT_MS) {
+                    std::cerr << "Timeout waiting for websocket thread" << std::endl;
+                    break;
+                }
+                
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            
+            // Clean up the temporary thread
+            if (temp_thread.joinable()) {
+                temp_thread.detach();
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error joining websocket thread: " << e.what() << std::endl;
         }
     }
     
-    return false;
+    if (trading_thread_.joinable()) {
+        try {
+            // Create a timeout mechanism for trading thread
+            auto start_time = std::chrono::high_resolution_clock::now();
+            bool joined = false;
+            
+            // Try to join with a timeout
+            std::thread temp_thread([this, &joined]() { 
+                trading_thread_.join(); 
+                joined = true;
+            });
+            
+            // Wait for the join to complete or timeout
+            while (!joined) {
+                auto current_time = std::chrono::high_resolution_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    current_time - start_time).count();
+                    
+                if (elapsed > THREAD_JOIN_TIMEOUT_MS) {
+                    std::cerr << "Timeout waiting for trading thread" << std::endl;
+                    break;
+                }
+                
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            
+            // Clean up the temporary thread
+            if (temp_thread.joinable()) {
+                temp_thread.detach();
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error joining trading thread: " << e.what() << std::endl;
+        }
+    }
+}
+
+bool TradingBot::waitForThreads(int timeout_ms) {
+    bool success = true;
+    
+    // Wait for trading thread to finish
+    if (trading_thread_.joinable()) {
+        std::cout << "Waiting for trading thread to finish..." << std::endl;
+        
+        // Create a timeout mechanism
+        auto start_time = std::chrono::high_resolution_clock::now();
+        while (trading_thread_.joinable()) {
+            // Check if timeout has been reached
+            auto current_time = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                current_time - start_time).count();
+                
+            if (elapsed > timeout_ms) {
+                std::cerr << "Timeout waiting for trading thread" << std::endl;
+                success = false;
+                break;
+            }
+            
+            // Try to join with a small timeout
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    
+    // Wait for websocket thread to finish
+    if (websocket_thread_.joinable()) {
+        std::cout << "Waiting for websocket thread to finish..." << std::endl;
+        
+        // Create a timeout mechanism
+        auto start_time = std::chrono::high_resolution_clock::now();
+        while (websocket_thread_.joinable()) {
+            // Check if timeout has been reached
+            auto current_time = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                current_time - start_time).count();
+                
+            if (elapsed > timeout_ms) {
+                std::cerr << "Timeout waiting for websocket thread" << std::endl;
+                success = false;
+                break;
+            }
+            
+            // Try to join with a small timeout
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    
+    return success;
+}
+
+void TradingBot::closeWebSocket() {
+    if (orderbook_fetcher_) {
+        orderbook_fetcher_->disconnect();
+    }
+}
+
+bool TradingBot::cancelAllOrders() {
+    std::lock_guard<std::mutex> lock(orders_mutex_);
+    
+    if (api_trader_) {
+        // Use the API trader to cancel all orders
+        return api_trader_->cancelAllOrders(symbol_);
+    } else {
+        std::cerr << "ERROR: API trader not initialized" << std::endl;
+        return false;
+    }
 }
 
 } // namespace trading
