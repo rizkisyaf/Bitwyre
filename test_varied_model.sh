@@ -99,7 +99,7 @@ EOF
 chmod +x test_model_prediction.py
 
 # Run the test
-python3 test_model_prediction.py model_varied.pt 25
+python3 test_model_prediction.py model_varied.pt 50
 
 # Clean up
 rm test_model_prediction.py

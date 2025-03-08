@@ -28,7 +28,7 @@ echo "🔍 Starting model training and deployment pipeline..."
 
 # Create a varied model
 echo "🧠 Creating a varied model..."
-python3 ${PYTHON_DIR}/training/create_varied_model.py 25 ${VARIED_MODEL_FILE}
+python3 ${PYTHON_DIR}/training/create_varied_model.py 50 ${VARIED_MODEL_FILE}
 
 # Create normalization parameters
 echo "📊 Creating normalization parameters..."
@@ -38,7 +38,7 @@ cat > create_norm_params.py << 'EOF'
 import numpy as np
 import sys
 
-def create_norm_params(mean_path, std_path, input_size=25):
+def create_norm_params(mean_path, std_path, input_size=50):
     """Create normalization parameters for the model"""
     print(f"Creating normalization parameters for input_size={input_size}")
     
@@ -56,12 +56,12 @@ def create_norm_params(mean_path, std_path, input_size=25):
 if __name__ == "__main__":
     mean_path = sys.argv[1]
     std_path = sys.argv[2]
-    input_size = int(sys.argv[3]) if len(sys.argv) > 3 else 25
+    input_size = int(sys.argv[3]) if len(sys.argv) > 3 else 50
     
     create_norm_params(mean_path, std_path, input_size)
 EOF
 
-python3 create_norm_params.py ${MEAN_FILE} ${STD_FILE} 25
+python3 create_norm_params.py ${MEAN_FILE} ${STD_FILE} 50
 rm create_norm_params.py
 
 # Test the model
