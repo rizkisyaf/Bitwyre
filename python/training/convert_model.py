@@ -111,10 +111,33 @@ def create_new_model(output_path):
     """Create a new model with the correct input size and save it"""
     print("Creating new model with input_size=50")
     model = ImprovedTradingModel(input_size=50)
+    
+    # Initialize weights properly to avoid NaN outputs
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            if len(param.shape) >= 2:
+                # Use Xavier/Glorot initialization for weights with 2+ dimensions
+                nn.init.xavier_uniform_(param)
+            else:
+                # For 1D weights (e.g., in LayerNorm), use normal initialization
+                nn.init.normal_(param, mean=0.0, std=0.02)
+        elif 'bias' in name:
+            # Initialize biases to small positive values to avoid dead neurons
+            nn.init.constant_(param, 0.01)
+    
     model.eval()
     
     # Create example input
     example_input = torch.randn(1, 50)
+    
+    # Test forward pass to ensure no NaN outputs
+    with torch.no_grad():
+        output = model(example_input)
+        if torch.isnan(output).any() or torch.isinf(output).any():
+            print("Warning: Model produces NaN or Inf outputs. Reinitializing...")
+            return create_new_model(output_path)
+        else:
+            print(f"Model test output: {output.item()}")
     
     # Trace the model
     traced_model = torch.jit.trace(model, example_input)
@@ -122,6 +145,7 @@ def create_new_model(output_path):
     # Save the traced model
     traced_model.save(output_path)
     print(f"New model saved to {output_path}")
+    return True
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

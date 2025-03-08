@@ -244,7 +244,7 @@ int runTradingBot(int argc, char* argv[]) {
     
     // Create the trading bot
     auto fetcher = std::make_shared<trading::OrderbookFetcher>(symbol);
-    auto model = std::make_shared<trading::TradingModel>("model_new.pt", "mean.npy", "std.npy");
+    auto model = std::make_shared<trading::TradingModel>("model_fixed.pt", "mean.npy", "std.npy");
     
     // Create the bot with API keys
     std::shared_ptr<trading::TradingBot> bot;
