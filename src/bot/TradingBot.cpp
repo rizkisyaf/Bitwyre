@@ -535,9 +535,13 @@ void TradingBot::processModelPrediction(double prediction, const Orderbook& orde
     double normalized_prediction = std::min(1.0, std::max(0.0, prediction));
     double signal_strength = std::abs(normalized_prediction - 0.5) * 2.0;  // Convert to 0-1 scale
     
+    // Determine allowed action based on current position
+    bool can_buy = (position_ <= 0);  // Can only buy if no position or short position
+    bool can_sell = (position_ >= 0); // Can only sell if no position or long position
+    
     // Strong signals only (>60% confidence)
     if (signal_strength > 0.2) {  // Requires at least 60% confidence
-        if (normalized_prediction > 0.51) {  // BUY Signal
+        if (normalized_prediction > 0.51 && can_buy) {  // BUY Signal and allowed to buy
             std::cout << "\n🔵 BUY Signal [Confidence: " << std::fixed << std::setprecision(2) 
                       << signal_strength * 100 << "%]" << std::endl;
             
@@ -561,8 +565,7 @@ void TradingBot::processModelPrediction(double prediction, const Orderbook& orde
                 entry_value_ = notional_value;
                 std::cout << "✅ BUY order placed successfully" << std::endl;
             }
-            
-        } else if (normalized_prediction < 0.49) {  // SELL Signal
+        } else if (normalized_prediction < 0.49 && can_sell) {  // SELL Signal and allowed to sell
             std::cout << "\n🔴 SELL Signal [Confidence: " << std::fixed << std::setprecision(2) 
                       << signal_strength * 100 << "%]" << std::endl;
             
@@ -579,13 +582,22 @@ void TradingBot::processModelPrediction(double prediction, const Orderbook& orde
                       << "- Quantity: " << order_quantity << std::endl
                       << "- Notional: " << notional_value << " USDT" << std::endl;
                       
-        if (placeOrder(order)) {
+            if (placeOrder(order)) {
                 std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
                 entry_value_ = notional_value;
                 std::cout << "✅ SELL order placed successfully" << std::endl;
             }
         } else {
-            std::cout << "\n⚪ NEUTRAL Signal - No trade" << std::endl;
+            // Either neutral signal or not allowed to take the position
+            if (normalized_prediction > 0.51 && !can_buy) {
+                std::cout << "\n🚫 BUY Signal [Confidence: " << std::fixed << std::setprecision(2) 
+                          << signal_strength * 100 << "%] - Not allowed (already long)" << std::endl;
+            } else if (normalized_prediction < 0.49 && !can_sell) {
+                std::cout << "\n🚫 SELL Signal [Confidence: " << std::fixed << std::setprecision(2) 
+                          << signal_strength * 100 << "%] - Not allowed (already short)" << std::endl;
+            } else {
+                std::cout << "\n⚪ NEUTRAL Signal - No trade" << std::endl;
+            }
         }
     } else {
         std::cout << "\n⚪ Weak Signal [Confidence: " << std::fixed << std::setprecision(2) 

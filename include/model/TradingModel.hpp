@@ -17,7 +17,7 @@ namespace trading {
 
 // Pre-defined constants for feature vector size
 constexpr int MAX_DEPTH = 10;
-constexpr int FEATURE_COUNT = 50; // Confirmed to match the feature vector size used in TradingBot
+constexpr int FEATURE_COUNT = 61; // Updated to match the feature vector size used in the trained model
 
 // Aligned feature vector for better memory access patterns
 struct alignas(32) FeatureVector {
