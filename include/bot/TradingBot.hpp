@@ -136,10 +136,13 @@ public:
      */
     bool cancelAllOrders();
     
+    // Save trading history to a file for model retraining
+    void saveTradingHistory(const std::string& filename = "trading_history.csv");
+    
 private:
     void run();
     void onOrderbookUpdate(const Orderbook& orderbook);
-    void processModelPrediction(double prediction, const Orderbook& orderbook_snapshot);
+    void processModelPrediction(double prediction, const Orderbook& orderbook_snapshot, const std::vector<float>& features);
     bool placeOrder(const TradeOrder& order);
     bool cancelOrder(const std::string& order_id);
     void updateOrderStatus();
@@ -244,6 +247,29 @@ private:
     
     // Trading parameters
     int leverage_ = 5;  // Default 5x leverage
+    
+    // Structure to track trading decisions and outcomes
+    struct TradingDecision {
+        std::chrono::system_clock::time_point timestamp;
+        std::vector<float> features;
+        double prediction;
+        double signal_strength;
+        TradeOrder::Type action;  // BUY, SELL, or NONE
+        double entry_price;
+        double exit_price;
+        double profit_loss;
+        bool completed;
+    };
+    
+    std::vector<TradingDecision> trading_history_;
+    std::mutex history_mutex_;
+    
+    // Method to record a new trading decision
+    void recordTradingDecision(const std::vector<float>& features, double prediction, 
+                              double signal_strength, TradeOrder::Type action, double price);
+    
+    // Method to update a trading decision with its outcome
+    void updateTradingDecision(const std::string& order_id, double exit_price, double profit_loss);
 };
 
 } // namespace trading 

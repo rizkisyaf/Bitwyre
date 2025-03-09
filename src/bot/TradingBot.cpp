@@ -1,11 +1,13 @@
 #include "bot/TradingBot.hpp"
 #include "bot/BinanceApiTrader.hpp"
+#include "model/TradingModel.hpp"
 #include <iostream>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <iomanip>
 #include <sstream>
+#include <fstream>
 
 namespace trading {
 
@@ -202,17 +204,27 @@ void TradingBot::start() {
 }
 
 void TradingBot::stop() {
-    bool was_running = false;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        was_running = running_;
-        running_ = false;
+    std::cout << "Stopping trading bot..." << std::endl;
+    
+    // Set running flag to false to stop the main loop
+    running_ = false;
+    
+    // Cancel all open orders
+    cancelAllOrders();
+    
+    // Wait for threads to finish
+    if (!waitForThreads(THREAD_JOIN_TIMEOUT_MS)) {
+        std::cerr << "Warning: Timed out waiting for threads to join" << std::endl;
+        shutdownThreads(true);
     }
     
-    if (was_running) {
-        cv_.notify_all();
-        shutdownThreads();
-    }
+    // Save trading history for model retraining
+    std::string history_file = "trading_history_" + 
+                              std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + 
+                              ".csv";
+    saveTradingHistory(history_file);
+    
+    std::cout << "Trading bot stopped" << std::endl;
 }
 
 double TradingBot::getPosition() const {
@@ -340,7 +352,7 @@ void TradingBot::onOrderbookUpdate(const Orderbook& orderbook) {
         
         // Extract features from the orderbook
         std::vector<float> features;
-        features.reserve(50); // Pre-allocate space for 50 features
+        features.reserve(FEATURE_COUNT); // Pre-allocate space for 61 features
         
         // Add basic features
         double best_bid = orderbook.getBestBid();
@@ -416,10 +428,102 @@ void TradingBot::onOrderbookUpdate(const Orderbook& orderbook) {
             }
         }
         
-        // Pad remaining features
-        while (features.size() < 50) {
+        // Add additional features to reach 61 total features
+        // Add time-based features
+        auto update_time = std::chrono::high_resolution_clock::now();
+        auto time_since_last_update = std::chrono::duration_cast<std::chrono::milliseconds>(
+            update_time - last_update_time_).count() / 1000.0;
+        features.push_back(static_cast<float>(time_since_last_update));
+        
+        // Add book depth (number of valid levels)
+        int bid_depth = std::min(10, static_cast<int>(bids.size()));
+        int ask_depth = std::min(10, static_cast<int>(asks.size()));
+        features.push_back(static_cast<float>(bid_depth));
+        features.push_back(static_cast<float>(ask_depth));
+        
+        // Add volume-weighted mid price
+        double volume_weighted_mid = 0.0;
+        double total_volume = 0.0;
+        
+        for (size_t i = 0; i < std::min(bids.size(), size_t(5)); i++) {
+            volume_weighted_mid += bids[i].price * bids[i].quantity;
+            total_volume += bids[i].quantity;
+        }
+        
+        for (size_t i = 0; i < std::min(asks.size(), size_t(5)); i++) {
+            volume_weighted_mid += asks[i].price * asks[i].quantity;
+            total_volume += asks[i].quantity;
+        }
+        
+        if (total_volume > 0) {
+            volume_weighted_mid /= total_volume;
+        } else {
+            volume_weighted_mid = mid_price;
+        }
+        features.push_back(static_cast<float>(volume_weighted_mid));
+        
+        // Add price momentum (difference from previous price)
+        double price_momentum = 0.0;
+        {
+            std::lock_guard<std::mutex> lock(price_history_mutex_);
+            if (!price_history_.empty() && price_history_[0] > 0) {
+                price_momentum = (mid_price - price_history_[0]) / price_history_[0];
+            }
+        }
+        features.push_back(static_cast<float>(price_momentum));
+        
+        // Add additional market metrics as features
+        // Instead of using volatility_history_ and trade_intervals_ which are not defined,
+        // we'll use alternative metrics
+        
+        // Add current volatility as a feature
+        features.push_back(static_cast<float>(volatility));
+        
+        // Add bid-ask spread percentage
+        double spread_percentage = (spread / mid_price) * 100.0;
+        features.push_back(static_cast<float>(spread_percentage));
+        
+        // Add bid-ask volume ratio
+        double volume_ratio = (bid_volume > 0 && ask_volume > 0) ? (bid_volume / ask_volume) : 1.0;
+        features.push_back(static_cast<float>(volume_ratio));
+        
+        // Add average bid and ask sizes
+        double avg_bid_size = (bids.size() > 0) ? (bid_volume / bids.size()) : 0.0;
+        double avg_ask_size = (asks.size() > 0) ? (ask_volume / asks.size()) : 0.0;
+        features.push_back(static_cast<float>(avg_bid_size));
+        features.push_back(static_cast<float>(avg_ask_size));
+        
+        // Add current balance and position
+        features.push_back(static_cast<float>(balance_));
+        features.push_back(static_cast<float>(position_));
+        
+        // Add market depth imbalance
+        double depth_imbalance = (bid_depth - ask_depth) / static_cast<double>(bid_depth + ask_depth);
+        features.push_back(static_cast<float>(depth_imbalance));
+        
+        // Add additional derived features
+        // Price distance from best bid/ask
+        double price_distance_bid = (mid_price - best_bid) / mid_price;
+        double price_distance_ask = (best_ask - mid_price) / mid_price;
+        features.push_back(static_cast<float>(price_distance_bid));
+        features.push_back(static_cast<float>(price_distance_ask));
+        
+        // Ensure we have exactly 61 features
+        while (features.size() < FEATURE_COUNT) {
             features.push_back(0.0f);
         }
+        
+        // Trim if we have too many features
+        if (features.size() > FEATURE_COUNT) {
+            features.resize(FEATURE_COUNT);
+        }
+        
+        // Print the first 10 features for debugging
+        std::cout << "First 10 features: ";
+        for (size_t i = 0; i < std::min(features.size(), (size_t)10); ++i) {
+            std::cout << features[i] << " ";
+        }
+        std::cout << std::endl;
         
         // Get prediction from the model
         double prediction;
@@ -458,9 +562,9 @@ void TradingBot::onOrderbookUpdate(const Orderbook& orderbook) {
             }
         }
         
-        // Only process valid predictions
+        // Process the prediction
         if (prediction >= 0.0 && prediction <= 1.0) {
-        processModelPrediction(prediction, orderbook);
+            processModelPrediction(prediction, orderbook, features);
         } else {
             std::cerr << "❌ Invalid prediction value: " << prediction << " - must be between 0 and 1" << std::endl;
         }
@@ -470,7 +574,7 @@ void TradingBot::onOrderbookUpdate(const Orderbook& orderbook) {
     }
 }
 
-void TradingBot::processModelPrediction(double prediction, const Orderbook& orderbook_snapshot) {
+void TradingBot::processModelPrediction(double prediction, const Orderbook& orderbook_snapshot, const std::vector<float>& features) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     // Update price history for volatility calculation
@@ -479,7 +583,7 @@ void TradingBot::processModelPrediction(double prediction, const Orderbook& orde
         double mid_price = orderbook_snapshot.getMidPrice();
         price_history_.push_back(mid_price);
         if (price_history_.size() > price_history_length_) {
-        price_history_.erase(price_history_.begin());
+            price_history_.erase(price_history_.begin());
         }
     }
     
@@ -522,8 +626,33 @@ void TradingBot::processModelPrediction(double prediction, const Orderbook& orde
     // Calculate maximum quantity based on available margin
     double max_quantity = std::floor((max_trade_margin / market_price) * 1000.0) / 1000.0;
     
+    // Ensure max_quantity is at least equal to min_quantity
+    // This prevents the situation where min_quantity > max_quantity
+    if (max_quantity < min_quantity) {
+        // If max_quantity is less than min_quantity, we need to adjust max_trade_margin
+        double required_margin = min_quantity * market_price;
+        if (required_margin <= available_margin) {
+            // We have enough margin to meet the minimum notional requirement
+            max_quantity = min_quantity;
+            std::cout << "⚠️ Adjusted max quantity to meet minimum notional requirement: " << max_quantity << std::endl;
+        } else {
+            // We don't have enough margin even with leverage
+            std::cout << "⚠️ Insufficient margin to meet minimum notional requirement" << std::endl;
+            std::cout << "   Required: " << required_margin << " USDT, Available: " << available_margin << " USDT" << std::endl;
+            // Set max_quantity to 0 to prevent trading
+            max_quantity = 0.0;
+        }
+    }
+    
     // Use the minimum between max_quantity and min_quantity, but ensure it's at least MIN_QTY
-    double order_quantity = std::max(MIN_QTY, std::min(max_quantity, min_quantity));
+    // Only if max_quantity is greater than 0
+    double order_quantity;
+    if (max_quantity > 0.0) {
+        order_quantity = std::max(MIN_QTY, std::min(max_quantity, min_quantity));
+    } else {
+        // Not enough margin, set order_quantity to 0
+        order_quantity = 0.0;
+    }
     
     std::cout << "📊 Order Calculation:"
               << "\n- Market Price: " << market_price
@@ -546,6 +675,11 @@ void TradingBot::processModelPrediction(double prediction, const Orderbook& orde
                       << signal_strength * 100 << "%]" << std::endl;
             
             // Check if we have enough margin for the trade
+            if (order_quantity <= 0.0) {
+                std::cerr << "❌ Insufficient margin for trade" << std::endl;
+                return;
+            }
+            
             double notional_value = order_quantity * market_price;
             if (notional_value < MIN_NOTIONAL) {
                 std::cerr << "❌ Insufficient margin - Required: " << MIN_NOTIONAL 
@@ -564,10 +698,20 @@ void TradingBot::processModelPrediction(double prediction, const Orderbook& orde
                 std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
                 entry_value_ = notional_value;
                 std::cout << "✅ BUY order placed successfully" << std::endl;
+                
+                // Record the trading decision
+                recordTradingDecision(features, prediction, signal_strength, 
+                                     TradeOrder::Type::BUY, market_price);
             }
         } else if (normalized_prediction < 0.49 && can_sell) {  // SELL Signal and allowed to sell
             std::cout << "\n🔴 SELL Signal [Confidence: " << std::fixed << std::setprecision(2) 
                       << signal_strength * 100 << "%]" << std::endl;
+            
+            // Check if we have enough margin for the trade
+            if (order_quantity <= 0.0) {
+                std::cerr << "❌ Insufficient margin for trade" << std::endl;
+                return;
+            }
             
             double notional_value = order_quantity * market_price;
             if (notional_value < MIN_NOTIONAL) {
@@ -586,6 +730,10 @@ void TradingBot::processModelPrediction(double prediction, const Orderbook& orde
                 std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
                 entry_value_ = notional_value;
                 std::cout << "✅ SELL order placed successfully" << std::endl;
+                
+                // Record the trading decision
+                recordTradingDecision(features, prediction, signal_strength, 
+                                     TradeOrder::Type::SELL, market_price);
             }
         } else {
             // Either neutral signal or not allowed to take the position
@@ -621,6 +769,21 @@ bool TradingBot::placeOrder(const TradeOrder& order) {
                 std::lock_guard<std::mutex> lock(orders_mutex_);
                 open_orders_.push_back(order);
             }
+            
+            // Update position immediately (will be corrected by updateOrderStatus later)
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                // For market orders, assume they're filled immediately
+                if (order.type == TradeOrder::Type::BUY) {
+                    position_ += order.quantity;
+                } else {
+                    position_ -= order.quantity;
+                }
+                std::cout << "📊 Updated Position (after order): " << position_ << " " << symbol_.substr(0, symbol_.length() - 4) << std::endl;
+            }
+            
+            // Force an immediate update of order status to get accurate position
+            updateOrderStatus();
             
             return true;
         } else {
@@ -673,6 +836,7 @@ void TradingBot::updateOrderStatus() {
         // Update balance from available balance
         if (account_info.contains("availableBalance")) {
             balance_ = std::stod(account_info["availableBalance"].get<std::string>());
+            std::cout << "💰 Updated Balance: " << balance_ << " USDT" << std::endl;
         }
         
         // Update position from positions array
@@ -680,7 +844,12 @@ void TradingBot::updateOrderStatus() {
         if (account_info.contains("positions")) {
             for (const auto& pos : account_info["positions"]) {
                 if (pos["symbol"] == symbol_) {
-                    position_ = std::stod(pos["positionAmt"].get<std::string>());
+                    // Convert position amount to double and update position_
+                    std::string posAmt = pos["positionAmt"].get<std::string>();
+                    position_ = std::stod(posAmt);
+                    
+                    // Log position update for debugging
+                    std::cout << "📊 Updated Position: " << position_ << " " << symbol_.substr(0, symbol_.length() - 4) << std::endl;
                     
                     // Update entry price and current value
                     double entry_price = std::stod(pos["entryPrice"].get<std::string>());
@@ -690,11 +859,22 @@ void TradingBot::updateOrderStatus() {
                     
                     // Update unrealized PnL
                     std::lock_guard<std::mutex> pnl_lock(pnl_mutex_);
-                    unrealized_pnl_ = std::stod(pos["unrealizedPnl"].get<std::string>());
+                    unrealized_pnl_ = std::stod(pos["unrealizedProfit"].get<std::string>());
                     total_pnl_ = realized_pnl_ + unrealized_pnl_;
+                    
+                    // Log additional position details for debugging
+                    std::cout << "📈 Position Details:" << std::endl;
+                    std::cout << "  Entry Price: " << entry_price << std::endl;
+                    std::cout << "  Mark Price: " << mark_price << std::endl;
+                    std::cout << "  Unrealized PnL: " << unrealized_pnl_ << std::endl;
+                    
                     break;
                 }
             }
+        } else {
+            std::cerr << "⚠️ Warning: No positions array found in account info" << std::endl;
+            // Print the account info for debugging
+            std::cout << "Account Info: " << account_info.dump(2) << std::endl;
         }
         
         // Get open orders
@@ -768,44 +948,46 @@ double TradingBot::calculateMarketVolatility() const {
 void TradingBot::calculatePnL(const TradeOrder& filled_order, double current_price) {
     std::lock_guard<std::mutex> lock(pnl_mutex_);
     
-    // Calculate P&L for this trade
+    double order_value = filled_order.quantity * filled_order.price;
+    double current_value = filled_order.quantity * current_price;
     double trade_pnl = 0.0;
     
     if (filled_order.type == TradeOrder::Type::BUY) {
-        // For a buy, P&L is positive if current price > entry price
-        trade_pnl = (current_price - filled_order.entry_price) * filled_order.filled_quantity;
+        // For a buy order, profit is current_value - order_value
+        trade_pnl = current_value - order_value;
     } else {
-        // For a sell, P&L is positive if entry price > current price
-        trade_pnl = (filled_order.entry_price - current_price) * filled_order.filled_quantity;
+        // For a sell order, profit is order_value - current_value
+        trade_pnl = order_value - current_value;
     }
     
     // Update realized P&L
     realized_pnl_ += trade_pnl;
+    total_pnl_ = realized_pnl_ + unrealized_pnl_;
     
-    // Update win/loss statistics
-    if (trade_pnl > 0.0) {
+    // Update uncapped metrics
+    uncapped_unrealized_pnl_ = unrealized_pnl_;
+    uncapped_total_pnl_ = realized_pnl_ + uncapped_unrealized_pnl_;
+    
+    // Update win/loss counts and metrics
+    if (trade_pnl > 0) {
         win_count_++;
         largest_win_ = std::max(largest_win_, trade_pnl);
-        avg_win_ = (avg_win_ * (win_count_ - 1) + trade_pnl) / win_count_;
-    } else if (trade_pnl < 0.0) {
+        avg_win_ = ((avg_win_ * (win_count_ - 1)) + trade_pnl) / win_count_;
+    } else if (trade_pnl < 0) {
         loss_count_++;
         largest_loss_ = std::min(largest_loss_, trade_pnl);
-        avg_loss_ = (avg_loss_ * (loss_count_ - 1) + trade_pnl) / loss_count_;
+        avg_loss_ = ((avg_loss_ * (loss_count_ - 1)) + trade_pnl) / loss_count_;
     }
-    
-    // Update total P&L
-    total_pnl_ = realized_pnl_ + unrealized_pnl_;
-    uncapped_total_pnl_ = realized_pnl_ + uncapped_unrealized_pnl_;
     
     // Calculate trade duration
     auto now = std::chrono::system_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - filled_order.timestamp);
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - filled_order.timestamp).count();
+    avg_trade_duration_ms_ = ((avg_trade_duration_ms_ * (win_count_ + loss_count_ - 1)) + duration) / (win_count_ + loss_count_);
     
-    // Update average trade duration
-    double total_trades = win_count_ + loss_count_;
-    if (total_trades > 0) {
-        avg_trade_duration_ms_ = (avg_trade_duration_ms_ * (total_trades - 1) + duration.count()) / total_trades;
-    }
+    // Update trading decision with outcome
+    updateTradingDecision(filled_order.id, current_price, trade_pnl);
+    
+    std::cout << "💰 Trade P&L: " << std::fixed << std::setprecision(4) << trade_pnl << " USDT" << std::endl;
 }
 
 bool TradingBot::checkRiskLimits() {
@@ -1051,6 +1233,126 @@ bool TradingBot::cancelAllOrders() {
         std::cerr << "ERROR: API trader not initialized" << std::endl;
         return false;
     }
+}
+
+// Structure to track trading decisions and outcomes
+struct TradingDecision {
+    std::chrono::system_clock::time_point timestamp;
+    std::vector<float> features;
+    double prediction;
+    double signal_strength;
+    TradeOrder::Type action;  // BUY, SELL, or NONE
+    double entry_price;
+    double exit_price;
+    double profit_loss;
+    bool completed;
+};
+
+std::vector<TradingDecision> trading_history_;
+std::mutex history_mutex_;
+
+// Method to save trading history to a file
+void saveTradingHistory(const std::string& filename = "trading_history.csv");
+
+// Method to record a new trading decision
+void recordTradingDecision(const std::vector<float>& features, double prediction, 
+                          double signal_strength, TradeOrder::Type action, double price);
+
+// Method to update a trading decision with its outcome
+void updateTradingDecision(const std::string& order_id, double exit_price, double profit_loss);
+
+void TradingBot::recordTradingDecision(const std::vector<float>& features, double prediction, 
+                                     double signal_strength, TradeOrder::Type action, double price) {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    
+    TradingDecision decision;
+    decision.timestamp = std::chrono::system_clock::now();
+    decision.features = features;
+    decision.prediction = prediction;
+    decision.signal_strength = signal_strength;
+    decision.action = action;
+    decision.entry_price = price;
+    decision.exit_price = 0.0;
+    decision.profit_loss = 0.0;
+    decision.completed = false;
+    
+    trading_history_.push_back(decision);
+    
+    std::cout << "📝 Recorded trading decision: " 
+              << (action == TradeOrder::Type::BUY ? "BUY" : 
+                 (action == TradeOrder::Type::SELL ? "SELL" : "NONE"))
+              << " at " << price << " (Prediction: " << prediction << ")" << std::endl;
+}
+
+void TradingBot::updateTradingDecision(const std::string& order_id, double exit_price, double profit_loss) {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    
+    // Find the most recent incomplete decision
+    for (auto it = trading_history_.rbegin(); it != trading_history_.rend(); ++it) {
+        if (!it->completed) {
+            it->exit_price = exit_price;
+            it->profit_loss = profit_loss;
+            it->completed = true;
+            
+            std::cout << "📊 Updated trading decision: " 
+                      << (it->action == TradeOrder::Type::BUY ? "BUY" : "SELL")
+                      << " Entry: " << it->entry_price << ", Exit: " << exit_price 
+                      << ", P&L: " << profit_loss << std::endl;
+            
+            break;
+        }
+    }
+}
+
+void TradingBot::saveTradingHistory(const std::string& filename) {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    
+    if (trading_history_.empty()) {
+        std::cout << "No trading history to save." << std::endl;
+        return;
+    }
+    
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open file " << filename << " for writing." << std::endl;
+        return;
+    }
+    
+    // Write header
+    file << "Timestamp,Prediction,SignalStrength,Action,EntryPrice,ExitPrice,ProfitLoss,Completed";
+    
+    // Write feature headers
+    for (size_t i = 0; i < trading_history_[0].features.size(); ++i) {
+        file << ",Feature" << i;
+    }
+    file << std::endl;
+    
+    // Write data
+    for (const auto& decision : trading_history_) {
+        // Convert timestamp to string
+        auto time_t = std::chrono::system_clock::to_time_t(decision.timestamp);
+        std::stringstream ss;
+        ss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+        
+        file << ss.str() << ","
+             << decision.prediction << ","
+             << decision.signal_strength << ","
+             << (decision.action == TradeOrder::Type::BUY ? "BUY" : 
+                (decision.action == TradeOrder::Type::SELL ? "SELL" : "NONE")) << ","
+             << decision.entry_price << ","
+             << decision.exit_price << ","
+             << decision.profit_loss << ","
+             << (decision.completed ? "TRUE" : "FALSE");
+        
+        // Write features
+        for (const auto& feature : decision.features) {
+            file << "," << feature;
+        }
+        file << std::endl;
+    }
+    
+    file.close();
+    std::cout << "Trading history saved to " << filename << std::endl;
 }
 
 } // namespace trading
