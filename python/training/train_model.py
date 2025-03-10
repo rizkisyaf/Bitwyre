@@ -22,30 +22,70 @@ class TradingModel(nn.Module):
     def __init__(self, input_size=50, hidden_size=128, num_layers=3, dropout=0.2):
         super().__init__()
         
-        # Input layer
-        layers = [
-            nn.Linear(input_size, hidden_size),
-            nn.LayerNorm(hidden_size),
+        # LSTM layers for capturing temporal patterns
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0
+        )
+        
+        # Attention mechanism
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_size,
+            num_heads=4,
+            dropout=dropout
+        )
+        
+        # Fully connected layers for prediction
+        self.fc_layers = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.LayerNorm(hidden_size // 2),
             nn.GELU(),
-            nn.Dropout(dropout)
-        ]
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, 1)
+        )
         
-        # Hidden layers
-        for _ in range(num_layers - 1):
-            layers.extend([
-                nn.Linear(hidden_size, hidden_size),
-                nn.LayerNorm(hidden_size),
-                nn.GELU(),
-                nn.Dropout(dropout)
-            ])
-        
-        # Output layer
-        layers.append(nn.Linear(hidden_size, 1))
-        
-        self.model = nn.Sequential(*layers)
+        # Initialize weights properly to avoid NaN issues
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize weights to avoid NaN issues during training"""
+        for name, param in self.named_parameters():
+            if 'weight' in name:
+                if len(param.shape) >= 2:
+                    # Use Xavier/Glorot initialization for weight matrices
+                    nn.init.xavier_uniform_(param)
+                else:
+                    # Use uniform initialization for bias terms
+                    nn.init.uniform_(param, -0.1, 0.1)
     
     def forward(self, x):
-        return self.model(x)
+        # Reshape input for LSTM if it's not already in batch_size x seq_len x features format
+        batch_size = x.size(0)
+        if len(x.shape) == 2:
+            # Add sequence dimension (batch_size, 1, features)
+            x = x.unsqueeze(1)
+        
+        # Pass through LSTM
+        lstm_out, _ = self.lstm(x)
+        
+        # Get the last output from LSTM
+        lstm_out = lstm_out[:, -1, :]
+        
+        # Apply attention (need to reshape for attention mechanism)
+        # Convert to seq_len x batch_size x hidden_size for attention
+        attn_input = lstm_out.unsqueeze(0)
+        attn_output, _ = self.attention(attn_input, attn_input, attn_input)
+        
+        # Reshape back to batch_size x hidden_size
+        attn_output = attn_output.squeeze(0)
+        
+        # Pass through fully connected layers
+        output = self.fc_layers(attn_output)
+        
+        return output
 
 # Custom dataset for orderbook data
 class OrderbookDataset(Dataset):
@@ -61,183 +101,217 @@ class OrderbookDataset(Dataset):
 
 def process_orderbook_data(data_path, future_window=10, price_change_threshold=0.001, neutral_handling='exclude'):
     """
-    Process orderbook data and generate features and labels
+    Process orderbook data from CSV file
     
     Args:
-        data_path: Path to the CSV file containing orderbook data
-        future_window: Number of rows to look ahead for price movement
-        price_change_threshold: Threshold for significant price movement (as a percentage)
-        neutral_handling: How to handle neutral labels ('exclude', 'separate', or 'distribute')
-    
+        data_path: Path to the CSV file
+        future_window: Number of rows to look ahead for price change
+        price_change_threshold: Threshold for price change to be considered significant
+        neutral_handling: How to handle neutral labels ('exclude', 'distribute', or 'include')
+        
     Returns:
         features: Numpy array of features
-        labels: Numpy array of labels (1 for price up, 0 for price down)
-        scaler: Fitted StandardScaler for feature normalization
+        labels: Numpy array of labels
     """
-    print(f"Loading data from {data_path}...")
+    print(f"Processing orderbook data from {data_path}")
+    print(f"Future window: {future_window}, Price change threshold: {price_change_threshold}")
+    print(f"Neutral handling: {neutral_handling}")
+    
+    # Load the data
     df = pd.read_csv(data_path)
     
-    # Check if the data has the expected columns
-    expected_columns = ['timestamp', 'bid_price1', 'bid_qty1', 'ask_price1', 'ask_qty1']
-    for col in expected_columns:
-        if col not in df.columns:
-            raise ValueError(f"Missing expected column: {col}")
+    # Initialize lists to store features and labels
+    all_features = []
+    all_labels = []
     
-    print(f"Data loaded successfully. Shape: {df.shape}")
-    print(f"Columns: {df.columns.tolist()}")
+    # Track mid prices for labeling
+    mid_prices = []
     
-    # Extract features
-    print("Extracting features...")
+    # Track additional temporal features
+    price_history = []  # For volatility calculation
+    volume_history = []  # For volume-based features
     
-    # Basic features
-    features = []
-    
-    # For each row, extract orderbook features
+    # Process each row
     for i in range(len(df)):
+        row = df.iloc[i]
+        
+        # Extract bid and ask data
+        bid_prices = []
+        bid_quantities = []
+        ask_prices = []
+        ask_quantities = []
+        
+        for j in range(1, 11):  # 10 levels
+            bid_price_col = f'bid_price_{j}'
+            bid_quantity_col = f'bid_quantity_{j}'
+            ask_price_col = f'ask_price_{j}'
+            ask_quantity_col = f'ask_quantity_{j}'
+            
+            if bid_price_col in row and not pd.isna(row[bid_price_col]):
+                bid_prices.append(float(row[bid_price_col]))
+                bid_quantities.append(float(row[bid_quantity_col]))
+            
+            if ask_price_col in row and not pd.isna(row[ask_price_col]):
+                ask_prices.append(float(row[ask_price_col]))
+                ask_quantities.append(float(row[ask_quantity_col]))
+        
+        # Skip if no bids or asks
+        if len(bid_prices) == 0 or len(ask_prices) == 0:
+            continue
+        
+        # Calculate mid price
+        mid_price = (bid_prices[0] + ask_prices[0]) / 2
+        mid_prices.append(mid_price)
+        
+        # Calculate spread
+        spread = ask_prices[0] - bid_prices[0]
+        
+        # Calculate bid and ask volumes
+        bid_volume = sum(bid_quantities)
+        ask_volume = sum(ask_quantities)
+        
+        # Calculate bid-ask imbalance
+        imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume + 1e-10)
+        
+        # Update history for temporal features
+        price_history.append(mid_price)
+        volume_history.append((bid_volume, ask_volume))
+        
+        # Create feature vector
         row_features = []
         
-        # Mid price
-        mid_price = (df.loc[i, 'bid_price1'] + df.loc[i, 'ask_price1']) / 2
+        # Basic features
         row_features.append(mid_price)
-        
-        # Spread
-        spread = df.loc[i, 'ask_price1'] - df.loc[i, 'bid_price1']
         row_features.append(spread)
-        
-        # Bid-ask imbalance
-        bid_volume = 0
-        ask_volume = 0
-        
-        # Sum up bid and ask volumes for all levels
-        for j in range(1, 11):  # Assuming 10 levels
-            bid_qty_col = f'bid_qty{j}'
-            ask_qty_col = f'ask_qty{j}'
-            if bid_qty_col in df.columns and ask_qty_col in df.columns:
-                bid_volume += df.loc[i, bid_qty_col]
-                ask_volume += df.loc[i, ask_qty_col]
-        
-        # Calculate imbalance
-        if (bid_volume + ask_volume) > 0:
-            imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume)
-        else:
-            imbalance = 0
-        
         row_features.append(imbalance)
         
-        # Add all bid and ask prices and quantities as features
-        for j in range(1, 11):  # Assuming 10 levels
-            bid_price_col = f'bid_price{j}'
-            bid_qty_col = f'bid_qty{j}'
-            ask_price_col = f'ask_price{j}'
-            ask_qty_col = f'ask_qty{j}'
-            
-            if bid_price_col in df.columns:
-                row_features.append(df.loc[i, bid_price_col])
-            if bid_qty_col in df.columns:
-                row_features.append(df.loc[i, bid_qty_col])
-            if ask_price_col in df.columns:
-                row_features.append(df.loc[i, ask_price_col])
-            if ask_qty_col in df.columns:
-                row_features.append(df.loc[i, ask_qty_col])
+        # Add raw prices and quantities
+        row_features.extend(bid_prices)
+        row_features.extend(bid_quantities)
+        row_features.extend(ask_prices)
+        row_features.extend(ask_quantities)
         
         # Add price differences between levels
-        for j in range(1, 10):  # Differences between adjacent levels
-            bid_price_col1 = f'bid_price{j}'
-            bid_price_col2 = f'bid_price{j+1}'
-            ask_price_col1 = f'ask_price{j}'
-            ask_price_col2 = f'ask_price{j+1}'
-            
-            if bid_price_col1 in df.columns and bid_price_col2 in df.columns:
-                row_features.append(df.loc[i, bid_price_col1] - df.loc[i, bid_price_col2])
-            if ask_price_col2 in df.columns and ask_price_col1 in df.columns:
-                row_features.append(df.loc[i, ask_price_col2] - df.loc[i, ask_price_col1])
+        for j in range(1, len(bid_prices)):
+            row_features.append(bid_prices[j-1] - bid_prices[j])
         
-        features.append(row_features)
+        for j in range(1, len(ask_prices)):
+            row_features.append(ask_prices[j] - ask_prices[j-1])
+            
+        # NEW FEATURES
+        
+        # 1. Depth ratio - ratio of bid volume to ask volume
+        depth_ratio = bid_volume / (ask_volume + 1e-10)  # Avoid division by zero
+        row_features.append(depth_ratio)
+        
+        # 2. Momentum features - price changes over different windows
+        if i >= 5 and len(price_history) >= 5:
+            momentum_5 = mid_price - price_history[-5]
+            row_features.append(momentum_5)
+        else:
+            row_features.append(0.0)
+            
+        if i >= 20 and len(price_history) >= 20:
+            momentum_20 = mid_price - price_history[-20]
+            row_features.append(momentum_20)
+        else:
+            row_features.append(0.0)
+        
+        # 3. Volatility - standard deviation of price over windows
+        if i >= 10 and len(price_history) >= 10:
+            volatility_10 = np.std(price_history[-10:])
+            row_features.append(volatility_10)
+        else:
+            row_features.append(0.0)
+            
+        if i >= 30 and len(price_history) >= 30:
+            volatility_30 = np.std(price_history[-30:])
+            row_features.append(volatility_30)
+        else:
+            row_features.append(0.0)
+        
+        # 4. Volume trend - change in volume over time
+        if i >= 10 and len(volume_history) >= 10:
+            bid_vol_change = bid_volume - volume_history[-10][0]
+            ask_vol_change = ask_volume - volume_history[-10][1]
+            row_features.append(bid_vol_change)
+            row_features.append(ask_vol_change)
+        else:
+            row_features.append(0.0)
+            row_features.append(0.0)
+        
+        # 5. Price acceleration - change in momentum
+        if i >= 10 and len(price_history) >= 10:
+            prev_momentum = price_history[-2] - price_history[-5]
+            current_momentum = price_history[-1] - price_history[-4]
+            acceleration = current_momentum - prev_momentum
+            row_features.append(acceleration)
+        else:
+            row_features.append(0.0)
+        
+        # 6. Liquidity imbalance at different levels
+        if len(bid_prices) >= 3 and len(ask_prices) >= 3:
+            top3_bid_vol = sum(bid_quantities[:3])
+            top3_ask_vol = sum(ask_quantities[:3])
+            top3_imbalance = (top3_bid_vol - top3_ask_vol) / (top3_bid_vol + top3_ask_vol + 1e-10)
+            row_features.append(top3_imbalance)
+        else:
+            row_features.append(0.0)
+            
+        # Store features
+        all_features.append(row_features)
     
-    features = np.array(features, dtype=np.float32)
-    print(f"Features extracted. Shape: {features.shape}")
-    
-    # Handle NaN values
-    nan_count = np.isnan(features).sum()
-    if nan_count > 0:
-        print(f"Warning: Found {nan_count} NaN values in features. Replacing with 0.")
-        features = np.nan_to_num(features, nan=0.0)
-    
-    # Normalize features
-    scaler = StandardScaler()
-    features = scaler.fit_transform(features)
-    
-    # Generate labels based on future price movement
-    print(f"Generating labels with future_window={future_window} and threshold={price_change_threshold}...")
-    labels = []
-    
-    # Calculate mid prices for all rows
-    mid_prices = [(df.loc[i, 'bid_price1'] + df.loc[i, 'ask_price1']) / 2 for i in range(len(df))]
-    
-    for i in range(len(df) - future_window):
+    # Create labels based on future price changes
+    for i in range(len(mid_prices) - future_window):
         current_price = mid_prices[i]
         future_price = mid_prices[i + future_window]
-        
-        # Calculate percentage change
         price_change = (future_price - current_price) / current_price
         
-        # 1 if price goes up by threshold, 0 if price goes down by threshold, 0.5 if neutral
+        # Determine label based on price change and threshold
         if price_change > price_change_threshold:
-            labels.append(1)  # Price goes up
+            label = 1  # Price goes up
         elif price_change < -price_change_threshold:
-            labels.append(0)  # Price goes down
+            label = 0  # Price goes down
         else:
-            if neutral_handling == 'separate':
-                labels.append(0.5)  # Neutral as a separate class
+            # Handle neutral case based on strategy
+            if neutral_handling == 'exclude':
+                # Skip this sample
+                all_features[i] = None
+                continue
             elif neutral_handling == 'distribute':
-                # Randomly assign neutral to up or down to maintain balance
-                if np.random.random() < 0.5:
-                    labels.append(1)
-                else:
-                    labels.append(0)
-            # If 'exclude', we'll filter these out later
-    
-    # Convert labels to numpy array
-    labels = np.array(labels, dtype=np.float32)
-    
-    # Print initial label distribution
-    up_count = np.sum(labels == 1)
-    down_count = np.sum(labels == 0)
-    neutral_count = np.sum(labels == 0.5)
-    total_count = len(labels)
-    
-    print(f"Initial label distribution:")
-    print(f"  Up: {up_count} ({up_count/total_count:.2%})")
-    print(f"  Down: {down_count} ({down_count/total_count:.2%})")
-    if neutral_handling == 'separate':
-        print(f"  Neutral: {neutral_count} ({neutral_count/total_count:.2%})")
-    
-    # Handle neutral labels based on the specified strategy
-    if neutral_handling == 'exclude':
-        # Remove neutral samples (those that didn't get labeled as up or down)
-        non_neutral_indices = np.where((labels == 1) | (labels == 0))[0]
-        features = features[non_neutral_indices]
-        labels = labels[non_neutral_indices]
+                # Randomly assign to up or down
+                label = np.random.choice([0, 1])
+            else:  # 'include'
+                # Use a third class (2) for neutral
+                label = 2
         
-        # Remove the last 'future_window' rows from features since we don't have labels for them
-        features = features[:-future_window]
-    else:
-        # Remove the last 'future_window' rows from features since we don't have labels for them
-        features = features[:-future_window]
+        all_labels.append(label)
     
-    # Print final label distribution
-    up_count = np.sum(labels == 1)
-    down_count = np.sum(labels == 0)
-    neutral_count = np.sum(labels == 0.5)
-    total_count = len(labels)
+    # Truncate features to match labels
+    all_features = all_features[:len(all_labels)]
     
-    print(f"Final label distribution:")
-    print(f"  Up: {up_count} ({up_count/total_count:.2%})")
-    print(f"  Down: {down_count} ({down_count/total_count:.2%})")
-    if neutral_handling == 'separate':
-        print(f"  Neutral: {neutral_count} ({neutral_count/total_count:.2%})")
+    # Remove None values (excluded neutral samples)
+    features_labels = [(f, l) for f, l in zip(all_features, all_labels) if f is not None]
+    if not features_labels:
+        print("No valid samples after processing")
+        return None, None
     
-    return features, labels, scaler
+    all_features, all_labels = zip(*features_labels)
+    
+    # Convert to numpy arrays
+    features = np.array(all_features)
+    labels = np.array(all_labels)
+    
+    print(f"Processed {len(features)} samples with {len(features[0])} features")
+    
+    # Print label distribution
+    unique, counts = np.unique(labels, return_counts=True)
+    print("Label distribution:")
+    for label, count in zip(unique, counts):
+        label_name = "Up" if label == 1 else "Down" if label == 0 else "Neutral"
+        print(f"  {label_name}: {count} ({count/len(labels):.2%})")
+    
+    return features, labels
 
 def apply_smote(features, labels):
     """
@@ -345,11 +419,22 @@ def train_model(features, labels, input_size, batch_size=64, epochs=50, learning
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     
+    # Learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min', 
+        factor=0.5, 
+        patience=5, 
+        verbose=True
+    )
+    
     # Training loop
     train_losses = []
     val_losses = []
     best_val_loss = float('inf')
     best_model_state = None
+    patience = 15  # Early stopping patience
+    epochs_no_improve = 0
     
     print(f"Starting training with {train_size} training samples and {val_size} validation samples...")
     
@@ -362,6 +447,10 @@ def train_model(features, labels, input_size, batch_size=64, epochs=50, learning
             outputs = model(batch_features)
             loss = criterion(outputs, batch_labels)
             loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             train_loss += loss.item()
         
@@ -371,85 +460,97 @@ def train_model(features, labels, input_size, batch_size=64, epochs=50, learning
         # Validation
         model.eval()
         val_loss = 0.0
+        val_preds = []
+        val_targets = []
+        
         with torch.no_grad():
             for batch_features, batch_labels in val_loader:
                 outputs = model(batch_features)
                 loss = criterion(outputs, batch_labels)
                 val_loss += loss.item()
+                
+                # Store predictions and targets for metrics
+                probs = torch.sigmoid(outputs)
+                preds = (probs > 0.5).float()
+                val_preds.extend(preds.cpu().numpy())
+                val_targets.extend(batch_labels.cpu().numpy())
         
         val_loss /= len(val_loader)
         val_losses.append(val_loss)
         
-        # Save best model
+        # Update learning rate based on validation loss
+        scheduler.step(val_loss)
+        
+        # Print progress
+        print(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
+        
+        # Check if this is the best model so far
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_model_state = model.state_dict().copy()
-        
-        # Print progress
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"Epoch {epoch+1}/{epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+            epochs_no_improve = 0
+            print(f"  New best model! Val Loss: {val_loss:.6f}")
+        else:
+            epochs_no_improve += 1
+            print(f"  No improvement for {epochs_no_improve} epochs")
+            
+            # Early stopping
+            if epochs_no_improve >= patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                break
     
-    # Load best model
-    model.load_state_dict(best_model_state)
+    # Load the best model
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        print(f"Loaded best model with validation loss: {best_val_loss:.6f}")
     
-    # Evaluate model
+    # Evaluate the model on validation set
     model.eval()
-    all_preds = []
-    all_probs = []
-    all_labels = []
+    val_preds = []
+    val_targets = []
     
     with torch.no_grad():
         for batch_features, batch_labels in val_loader:
             outputs = model(batch_features)
             probs = torch.sigmoid(outputs)
             preds = (probs > 0.5).float()
-            
-            all_preds.extend(preds.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
-            all_labels.extend(batch_labels.cpu().numpy())
+            val_preds.extend(probs.cpu().numpy())
+            val_targets.extend(batch_labels.cpu().numpy())
     
-    all_preds = np.array(all_preds).flatten()
-    all_probs = np.array(all_probs).flatten()
-    all_labels = np.array(all_labels).flatten()
+    # Convert to numpy arrays
+    val_preds = np.array(val_preds).flatten()
+    val_targets = np.array(val_targets).flatten()
     
     # Calculate metrics
-    accuracy = accuracy_score(all_labels, all_preds)
-    precision = precision_score(all_labels, all_preds, zero_division=0)
-    recall = recall_score(all_labels, all_preds, zero_division=0)
-    f1 = f1_score(all_labels, all_preds, zero_division=0)
+    val_preds_binary = (val_preds > 0.5).astype(int)
+    accuracy = accuracy_score(val_targets, val_preds_binary)
+    precision = precision_score(val_targets, val_preds_binary, zero_division=0)
+    recall = recall_score(val_targets, val_preds_binary, zero_division=0)
+    f1 = f1_score(val_targets, val_preds_binary, zero_division=0)
+    roc_auc = roc_auc_score(val_targets, val_preds)
+    conf_matrix = confusion_matrix(val_targets, val_preds_binary).tolist()
     
-    # Calculate ROC AUC if possible
-    try:
-        roc_auc = roc_auc_score(all_labels, all_probs)
-    except:
-        roc_auc = 0.5  # Default value if calculation fails
-    
-    # Calculate confusion matrix
-    cm = confusion_matrix(all_labels, all_preds)
-    
-    metrics = {
-        'accuracy': float(accuracy),
-        'precision': float(precision),
-        'recall': float(recall),
-        'f1_score': float(f1),
-        'roc_auc': float(roc_auc),
-        'best_val_loss': float(best_val_loss),
-        'confusion_matrix': cm.tolist() if cm is not None else None
-    }
-    
-    print("\nModel Evaluation:")
+    # Print metrics
+    print("\nValidation Metrics:")
     print(f"  Accuracy: {accuracy:.4f}")
     print(f"  Precision: {precision:.4f}")
     print(f"  Recall: {recall:.4f}")
     print(f"  F1 Score: {f1:.4f}")
     print(f"  ROC AUC: {roc_auc:.4f}")
+    print(f"  Confusion Matrix:")
+    print(f"    TN: {conf_matrix[0][0]}, FP: {conf_matrix[0][1]}")
+    print(f"    FN: {conf_matrix[1][0]}, TP: {conf_matrix[1][1]}")
     
-    if cm is not None and cm.shape == (2, 2):
-        print("\nConfusion Matrix:")
-        print(f"  True Negatives: {cm[0, 0]}")
-        print(f"  False Positives: {cm[0, 1]}")
-        print(f"  False Negatives: {cm[1, 0]}")
-        print(f"  True Positives: {cm[1, 1]}")
+    # Store metrics
+    metrics = {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'roc_auc': roc_auc,
+        'best_val_loss': best_val_loss,
+        'confusion_matrix': conf_matrix
+    }
     
     return model, train_losses, val_losses, metrics
 
@@ -526,7 +627,7 @@ def main():
     args = parser.parse_args()
     
     # Process data
-    features, labels, scaler = process_orderbook_data(
+    features, labels = process_orderbook_data(
         args.data, 
         future_window=args.future_window,
         price_change_threshold=args.price_change_threshold,
@@ -555,7 +656,7 @@ def main():
         args.output, 
         args.mean, 
         args.std, 
-        scaler,
+        None,
         metrics,
         input_size
     )

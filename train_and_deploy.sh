@@ -19,7 +19,7 @@ mkdir -p ${MODEL_DIR}
 if [ ! -f "${DATA_FILE}" ]; then
     echo "❌ Data file ${DATA_FILE} not found. Please run data collection first."
     echo "You can collect data using:"
-    echo "./build/src/collect_orderbook_data btcusdt 120 ${DATA_FILE}"
+    echo "./build/src/collect_orderbook_data btcusdt 1440 ${DATA_FILE}"
     exit 1
 fi
 
@@ -31,12 +31,13 @@ python3 ${PYTHON_DIR}/training/train_model.py --data ${DATA_FILE} \
   --output ${MODEL_FILE} \
   --mean ${MEAN_FILE} \
   --std ${STD_FILE} \
-  --epochs 30 \
-  --future-window 5 \
-  --price-change-threshold 0.0005 \
+  --epochs 100 \
+  --future-window 20 \
+  --price-change-threshold 0.0008 \
   --neutral-handling distribute \
   --use-class-weights \
-  --batch-size 32
+  --batch-size 64 \
+  --learning-rate 0.0005
 
 # Check if training was successful
 if [ ! -f "${MODEL_FILE}" ]; then

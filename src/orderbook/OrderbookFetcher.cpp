@@ -299,14 +299,15 @@ void OrderbookFetcher::onOpen(websocket_client* client, websocketpp::connection_
     std::cout << "[" << std::chrono::system_clock::now() << "] [connect] Successful connection" << std::endl;
     
     try {
-        // For Binance, we need to subscribe to the depth stream for the symbol
-        // The format is <symbol>@depth for the raw depth stream
+        // For Binance Futures, we need to subscribe to the depth stream for the symbol
+        // The format is <symbol>@depth for the raw depth stream (same as spot but using the futures endpoint)
+        // For perpetual contracts, the symbol should be lowercase, e.g., "btcusdt"
         std::string subscribe_msg = "{\"method\": \"SUBSCRIBE\", \"params\": [\"" + symbol_ + "@depth\"], \"id\": 1}";
         
-        std::cout << "Subscribing to " << symbol_ << "@depth" << std::endl;
+        std::cout << "Subscribing to " << symbol_ << "@depth on Binance Futures" << std::endl;
         client->send(hdl, subscribe_msg, websocketpp::frame::opcode::text);
         
-        std::cout << "Connected to exchange" << std::endl;
+        std::cout << "Connected to Binance Futures exchange" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Error subscribing to orderbook: " << e.what() << std::endl;
     }

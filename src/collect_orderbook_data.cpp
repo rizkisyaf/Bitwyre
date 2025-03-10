@@ -56,8 +56,8 @@ int main(int argc, char* argv[]) {
     }
     csv_file << std::endl;
 
-    // Connect to Binance WebSocket
-    std::string ws_url = "wss://stream.binance.com:9443/ws";
+    // Connect to Binance Futures WebSocket (for perpetual contracts)
+    std::string ws_url = "wss://fstream.binance.com/ws";
     if (!fetcher->connect(ws_url, symbol)) {
         std::cerr << "Failed to connect to WebSocket" << std::endl;
         return 1;
