@@ -119,6 +119,10 @@ def process_orderbook_data(data_path, future_window=10, price_change_threshold=0
     
     # Load the data
     df = pd.read_csv(data_path)
+    print(f"Loaded {len(df)} rows from CSV")
+    
+    # Debug: Check column names
+    print(f"CSV columns: {df.columns.tolist()}")
     
     # Initialize lists to store features and labels
     all_features = []
@@ -131,6 +135,10 @@ def process_orderbook_data(data_path, future_window=10, price_change_threshold=0
     price_history = []  # For volatility calculation
     volume_history = []  # For volume-based features
     
+    # Debug counters
+    valid_rows = 0
+    invalid_rows = 0
+    
     # Process each row
     for i in range(len(df)):
         row = df.iloc[i]
@@ -142,10 +150,10 @@ def process_orderbook_data(data_path, future_window=10, price_change_threshold=0
         ask_quantities = []
         
         for j in range(1, 11):  # 10 levels
-            bid_price_col = f'bid_price_{j}'
-            bid_quantity_col = f'bid_quantity_{j}'
-            ask_price_col = f'ask_price_{j}'
-            ask_quantity_col = f'ask_quantity_{j}'
+            bid_price_col = f'bid_price{j}'
+            bid_quantity_col = f'bid_qty{j}'
+            ask_price_col = f'ask_price{j}'
+            ask_quantity_col = f'ask_qty{j}'
             
             if bid_price_col in row and not pd.isna(row[bid_price_col]):
                 bid_prices.append(float(row[bid_price_col]))
@@ -157,6 +165,7 @@ def process_orderbook_data(data_path, future_window=10, price_change_threshold=0
         
         # Skip if no bids or asks
         if len(bid_prices) == 0 or len(ask_prices) == 0:
+            invalid_rows += 1
             continue
         
         # Calculate mid price
@@ -262,6 +271,13 @@ def process_orderbook_data(data_path, future_window=10, price_change_threshold=0
         all_features.append(row_features)
     
     # Create labels based on future price changes
+    print(f"Creating labels with future window: {future_window}")
+    print(f"Total mid prices collected: {len(mid_prices)}")
+    
+    up_count = 0
+    down_count = 0
+    neutral_count = 0
+    
     for i in range(len(mid_prices) - future_window):
         current_price = mid_prices[i]
         future_price = mid_prices[i + future_window]
@@ -270,10 +286,13 @@ def process_orderbook_data(data_path, future_window=10, price_change_threshold=0
         # Determine label based on price change and threshold
         if price_change > price_change_threshold:
             label = 1  # Price goes up
+            up_count += 1
         elif price_change < -price_change_threshold:
             label = 0  # Price goes down
+            down_count += 1
         else:
             # Handle neutral case based on strategy
+            neutral_count += 1
             if neutral_handling == 'exclude':
                 # Skip this sample
                 all_features[i] = None
@@ -281,6 +300,10 @@ def process_orderbook_data(data_path, future_window=10, price_change_threshold=0
             elif neutral_handling == 'distribute':
                 # Randomly assign to up or down
                 label = np.random.choice([0, 1])
+                if label == 1:
+                    up_count += 1
+                else:
+                    down_count += 1
             else:  # 'include'
                 # Use a third class (2) for neutral
                 label = 2
@@ -290,10 +313,32 @@ def process_orderbook_data(data_path, future_window=10, price_change_threshold=0
     # Truncate features to match labels
     all_features = all_features[:len(all_labels)]
     
+    print(f"Before filtering: {len(all_features)} features, {len(all_labels)} labels")
+    print(f"Price changes - Up: {up_count}, Down: {down_count}, Neutral: {neutral_count}")
+    
     # Remove None values (excluded neutral samples)
     features_labels = [(f, l) for f, l in zip(all_features, all_labels) if f is not None]
+    print(f"After filtering: {len(features_labels)} valid samples")
+    
     if not features_labels:
         print("No valid samples after processing")
+        
+        # Debug: Check if we have any mid prices
+        if len(mid_prices) == 0:
+            print("ERROR: No mid prices were calculated. Check bid/ask data.")
+        
+        # Debug: Check if price change threshold is too high
+        if len(mid_prices) > future_window:
+            max_change = 0
+            for i in range(len(mid_prices) - future_window):
+                current_price = mid_prices[i]
+                future_price = mid_prices[i + future_window]
+                price_change = abs((future_price - current_price) / current_price)
+                max_change = max(max_change, price_change)
+            
+            print(f"Maximum price change found: {max_change}")
+            print(f"Recommended threshold: {max_change * 0.5}")
+        
         return None, None
     
     all_features, all_labels = zip(*features_labels)
@@ -563,7 +608,7 @@ def save_model(model, output_path, mean_path, std_path, scaler, metrics, input_s
         output_path: Path to save the model
         mean_path: Path to save the mean values
         std_path: Path to save the standard deviation values
-        scaler: Fitted StandardScaler
+        scaler: Fitted StandardScaler (can be None if no scaling was applied)
         metrics: Dictionary of evaluation metrics
         input_size: Input size of the model
     """
@@ -574,13 +619,22 @@ def save_model(model, output_path, mean_path, std_path, scaler, metrics, input_s
     traced_model.save(output_path)
     print(f"Model saved to {output_path}")
     
-    # Save normalization parameters
-    mean = scaler.mean_.astype(np.float32)
-    std = scaler.scale_.astype(np.float32)
-    
-    np.save(mean_path, mean)
-    np.save(std_path, std)
-    print(f"Normalization parameters saved to {mean_path} and {std_path}")
+    # Save normalization parameters if scaler is provided
+    if scaler is not None:
+        mean = scaler.mean_.astype(np.float32)
+        std = scaler.scale_.astype(np.float32)
+        
+        np.save(mean_path, mean)
+        np.save(std_path, std)
+        print(f"Normalization parameters saved to {mean_path} and {std_path}")
+    else:
+        # Save default normalization parameters (no scaling)
+        mean = np.zeros(input_size, dtype=np.float32)
+        std = np.ones(input_size, dtype=np.float32)
+        
+        np.save(mean_path, mean)
+        np.save(std_path, std)
+        print(f"Default normalization parameters saved (no scaling applied)")
     
     # Save metrics
     metrics_path = os.path.splitext(output_path)[0] + "_metrics.json"

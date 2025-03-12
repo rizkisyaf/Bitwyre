@@ -6,7 +6,7 @@
 DATA_DIR="data"
 PYTHON_DIR="python"
 MODEL_DIR="models"
-DATA_FILE="${DATA_DIR}/orderbook_data_new.csv"
+DATA_FILE="${DATA_DIR}/futures_orderbook_data.csv"
 MODEL_FILE="model_trained.pt"
 MEAN_FILE="mean.npy"
 STD_FILE="std.npy"

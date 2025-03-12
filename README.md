@@ -111,3 +111,54 @@ The code includes robust handling for NaN values in features, but if you encount
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+# Orderbook Data Visualization
+
+This project provides tools to visualize cryptocurrency futures orderbook data.
+
+## Setup
+
+1. Install the required dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+
+2. Make sure your data file is in the correct location:
+   - The script expects the data file to be at `data/futures_orderbook_data.csv`
+
+## Running the Visualization
+
+Simply run the Python script:
+```
+python visualize_orderbook.py
+```
+
+## Visualizations Generated
+
+The script generates three types of visualizations:
+
+1. **Bid-Ask Spread Over Time**
+   - Shows how the best bid and ask prices change over time
+   - Also shows the spread (difference between best ask and best bid) in a separate chart
+   - Output files: `bid_ask_spread.png` and `spread_over_time.png`
+
+2. **Depth Chart**
+   - Shows the cumulative quantity available at different price levels for a specific timestamp
+   - Bids are shown in green, asks in red
+   - Output file: `depth_chart.png`
+
+3. **Volume-Weighted Average Price (VWAP) Over Time**
+   - Shows the average price weighted by quantity over time
+   - Output file: `vwap_over_time.png`
+
+## Data Format
+
+The script expects the data to be in the following format:
+```
+timestamp, bid_price1, bid_qty1, bid_price2, bid_qty2, ..., ask_price1, ask_qty1, ask_price2, ask_qty2, ...
+```
+
+Where:
+- `timestamp` is in milliseconds since epoch
+- The first half of the columns after timestamp are bid prices and quantities
+- The second half are ask prices and quantities
