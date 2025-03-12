@@ -249,6 +249,50 @@ void OrderbookFetcher::registerCallback(OrderbookCallback callback) {
     callbacks_.push_back(callback);
 }
 
+bool OrderbookFetcher::subscribeToStream(const std::string& stream_name, StreamCallback callback) {
+    if (!client_ || !connection_.lock()) {
+        std::cerr << "Cannot subscribe to stream: not connected" << std::endl;
+        return false;
+    }
+    
+    try {
+        // Store the callback
+        {
+            std::lock_guard<std::mutex> lock(stream_callbacks_mutex_);
+            stream_callbacks_[stream_name] = callback;
+        }
+        
+        // Create subscription message
+        json subscription = {
+            {"method", "SUBSCRIBE"},
+            {"params", {stream_name}},
+            {"id", 1}
+        };
+        
+        // Get connection handle
+        auto conn = connection_.lock();
+        if (!conn) {
+            std::cerr << "Cannot subscribe to stream: connection lost" << std::endl;
+            return false;
+        }
+        
+        // Send subscription message
+        websocketpp::lib::error_code ec;
+        client_->send(conn, subscription.dump(), websocketpp::frame::opcode::text, ec);
+        
+        if (ec) {
+            std::cerr << "Error sending subscription message: " << ec.message() << std::endl;
+            return false;
+        }
+        
+        std::cout << "Subscription message sent for stream: " << stream_name << std::endl;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error subscribing to stream: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 Orderbook OrderbookFetcher::getLatestOrderbook() const {
     std::lock_guard<std::mutex> lock(orderbook_mutex_);
     return orderbook_;
@@ -271,27 +315,61 @@ void OrderbookFetcher::onMessage(websocket_client* client, websocketpp::connecti
                                 websocket_client::message_ptr msg) {
     try {
         // Parse the message
-        json data = json::parse(msg->get_payload());
+        std::string payload = msg->get_payload();
+        json data = json::parse(payload);
         
-        // Log the message for debugging
-        std::cout << "Received message: " << data.dump().substr(0, 100) << "..." << std::endl;
+        // Debug first few messages
+        static int message_count = 0;
+        if (message_count < 3) {
+            std::cout << "Received message: " << payload.substr(0, 100) << "..." << std::endl;
+            message_count++;
+        }
         
-        // Process the message based on the exchange format
-        // For Binance, check if it's a depth update
-        if (data.contains("e") && data["e"] == "depthUpdate") {
+        // Check if this is a stream message
+        if (data.contains("stream") && data.contains("data")) {
+            std::string stream = data["stream"];
+            
+            // Find the callback for this stream
+            std::lock_guard<std::mutex> lock(stream_callbacks_mutex_);
+            auto it = stream_callbacks_.find(stream);
+            if (it != stream_callbacks_.end()) {
+                // Call the callback with the data
+                it->second(data["data"].dump());
+                return;
+            } else {
+                std::cerr << "No callback registered for stream: " << stream << std::endl;
+            }
+        }
+        // Check if this is a direct trade message (not wrapped in stream format)
+        else if (data.contains("e") && (data["e"] == "aggTrade" || data["e"] == "trade")) {
+            // Find the callback for the trade stream
+            std::string stream_name = symbol_ + "@aggTrade";
+            std::lock_guard<std::mutex> lock(stream_callbacks_mutex_);
+            auto it = stream_callbacks_.find(stream_name);
+            if (it != stream_callbacks_.end()) {
+                // Call the callback with the data
+                it->second(payload);
+                return;
+            }
+        }
+        // Check if this is a subscription response
+        else if (data.contains("result") && data.contains("id")) {
+            std::cout << "Subscription response: " << payload << std::endl;
+            return;
+        }
+        // If not a stream message or subscription response, process as orderbook update
+        else if (data.contains("lastUpdateId") || 
+                (data.contains("e") && data["e"] == "depthUpdate")) {
             processOrderbookUpdate(data);
         }
-        // Check if it's a subscription response
-        else if (data.contains("result") && data.contains("id")) {
-            std::cout << "Subscription response: " << data.dump() << std::endl;
-        }
-        // Handle other message types as needed
         else {
-            std::cout << "Unknown message type: " << data.dump().substr(0, 100) << "..." << std::endl;
+            std::cerr << "Unknown message format: " << payload.substr(0, 100) << "..." << std::endl;
         }
+    } catch (const json::parse_error& e) {
+        std::cerr << "JSON parse error: " << e.what() << std::endl;
+        std::cerr << "Raw message: " << msg->get_payload().substr(0, 100) << "..." << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Error processing message: " << e.what() << std::endl;
-        std::cerr << "Message payload: " << msg->get_payload().substr(0, 100) << "..." << std::endl;
     }
 }
 
@@ -302,14 +380,23 @@ void OrderbookFetcher::onOpen(websocket_client* client, websocketpp::connection_
         // For Binance Futures, we need to subscribe to the depth stream for the symbol
         // The format is <symbol>@depth for the raw depth stream (same as spot but using the futures endpoint)
         // For perpetual contracts, the symbol should be lowercase, e.g., "btcusdt"
-        std::string subscribe_msg = "{\"method\": \"SUBSCRIBE\", \"params\": [\"" + symbol_ + "@depth\"], \"id\": 1}";
+        std::string depth_stream = symbol_ + "@depth";
+        std::string subscribe_msg = "{\"method\": \"SUBSCRIBE\", \"params\": [\"" + depth_stream + "\"], \"id\": 1}";
         
-        std::cout << "Subscribing to " << symbol_ << "@depth on Binance Futures" << std::endl;
-        client->send(hdl, subscribe_msg, websocketpp::frame::opcode::text);
+        std::cout << "Subscribing to " << depth_stream << " on Binance Futures" << std::endl;
         
-        std::cout << "Connected to Binance Futures exchange" << std::endl;
+        // Send subscription message with error checking
+        websocketpp::lib::error_code ec;
+        client->send(hdl, subscribe_msg, websocketpp::frame::opcode::text, ec);
+        
+        if (ec) {
+            std::cerr << "Error subscribing to orderbook: " << ec.message() << std::endl;
+            return;
+        }
+        
+        std::cout << "Connected to Binance Futures exchange and subscribed to " << depth_stream << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "Error subscribing to orderbook: " << e.what() << std::endl;
+        std::cerr << "Error in onOpen handler: " << e.what() << std::endl;
     }
 }
 

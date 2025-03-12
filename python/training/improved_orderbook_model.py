@@ -170,6 +170,38 @@ def extract_features(row):
     while len(level_imbalances) < 5:
         level_imbalances.append(0)
     
+    # Extract trade data if available
+    taker_buy_volume = 0.0
+    taker_sell_volume = 0.0
+    trade_count = 0
+    avg_trade_price = 0.0
+    
+    if 'taker_buy_base_volume' in row and not pd.isna(row['taker_buy_base_volume']):
+        taker_buy_volume = float(row['taker_buy_base_volume'])
+    
+    if 'taker_sell_base_volume' in row and not pd.isna(row['taker_sell_base_volume']):
+        taker_sell_volume = float(row['taker_sell_base_volume'])
+    
+    if 'trade_count' in row and not pd.isna(row['trade_count']):
+        trade_count = float(row['trade_count'])
+    
+    if 'avg_trade_price' in row and not pd.isna(row['avg_trade_price']):
+        avg_trade_price = float(row['avg_trade_price'])
+    
+    # Calculate trade-based features
+    trade_imbalance = 0.0
+    if taker_buy_volume + taker_sell_volume > 0:
+        trade_imbalance = (taker_buy_volume - taker_sell_volume) / (taker_buy_volume + taker_sell_volume)
+    
+    # Calculate relative trade volume compared to orderbook depth
+    relative_buy_volume = taker_buy_volume / (ask_volume + 1e-10)  # Buy orders consume ask side
+    relative_sell_volume = taker_sell_volume / (bid_volume + 1e-10)  # Sell orders consume bid side
+    
+    # Price deviation between trades and orderbook
+    price_deviation = 0.0
+    if avg_trade_price > 0:
+        price_deviation = (avg_trade_price - mid_price) / mid_price
+    
     # Combine features
     features = [
         mid_price,
@@ -178,7 +210,12 @@ def extract_features(row):
         bid_curve_steepness,
         ask_curve_steepness,
         bid_pressure,
-        ask_pressure
+        ask_pressure,
+        trade_imbalance,
+        relative_buy_volume,
+        relative_sell_volume,
+        trade_count,
+        price_deviation
     ]
     features.extend(level_imbalances)
     
@@ -523,6 +560,11 @@ def save_sequence_model(model, output_path, metrics, input_size, sequence_length
             'ask_curve_steepness',
             'bid_pressure',
             'ask_pressure',
+            'trade_imbalance',
+            'relative_buy_volume',
+            'relative_sell_volume',
+            'trade_count',
+            'price_deviation',
             'level1_imbalance',
             'level2_imbalance',
             'level3_imbalance',
@@ -573,7 +615,9 @@ def visualize_orderbook_sentiment(sequences, labels, output_path, num_samples=5)
         num_samples: Number of samples to visualize
     """
     # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:  # Only create directory if path has a directory component
+        os.makedirs(output_dir, exist_ok=True)
     
     # Select random samples
     indices = np.random.choice(len(sequences), num_samples, replace=False)
@@ -583,14 +627,21 @@ def visualize_orderbook_sentiment(sequences, labels, output_path, num_samples=5)
         label = labels[idx]
         
         # Create a figure with multiple subplots
-        fig, axes = plt.subplots(4, 1, figsize=(12, 16), sharex=True)
+        fig, axes = plt.subplots(6, 1, figsize=(12, 20), sharex=True)
         
         # Extract features from sequence
         mid_prices = [seq[0] for seq in sequence]
         imbalances = [seq[2] for seq in sequence]
         bid_pressure = [seq[5] for seq in sequence]
         ask_pressure = [seq[6] for seq in sequence]
-        level1_imbalance = [seq[7] for seq in sequence]
+        level1_imbalance = [seq[12] for seq in sequence]  # Adjusted index for level1_imbalance
+        
+        # Extract trade-related features
+        trade_imbalances = [seq[7] for seq in sequence]
+        relative_buy_volumes = [seq[8] for seq in sequence]
+        relative_sell_volumes = [seq[9] for seq in sequence]
+        trade_counts = [seq[10] for seq in sequence]
+        price_deviations = [seq[11] for seq in sequence]
         
         # Plot 1: Mid price
         axes[0].plot(mid_prices)
@@ -615,6 +666,19 @@ def visualize_orderbook_sentiment(sequences, labels, output_path, num_samples=5)
         axes[3].set_title('Level 1 Imbalance')
         axes[3].axhline(y=0, color='r', linestyle='-')
         axes[3].grid(True)
+        
+        # Plot 5: Trade imbalance
+        axes[4].plot(trade_imbalances, 'purple')
+        axes[4].set_title('Trade Imbalance (Taker Buy vs Sell)')
+        axes[4].axhline(y=0, color='r', linestyle='-')
+        axes[4].grid(True)
+        
+        # Plot 6: Relative trade volumes
+        axes[5].plot(relative_buy_volumes, 'g', label='Relative Buy Volume')
+        axes[5].plot(relative_sell_volumes, 'r', label='Relative Sell Volume')
+        axes[5].set_title('Relative Trade Volumes')
+        axes[5].legend()
+        axes[5].grid(True)
         
         plt.tight_layout()
         plt.savefig(f"{output_path}_sample{i+1}.png")

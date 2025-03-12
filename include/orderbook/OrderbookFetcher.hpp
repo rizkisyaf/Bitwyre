@@ -43,6 +43,9 @@ class Orderbook;
 // Callback type for orderbook updates
 using OrderbookCallback = std::function<void(const Orderbook&)>;
 
+// Callback type for generic stream data
+using StreamCallback = std::function<void(const std::string&)>;
+
 /**
  * @brief Represents an orderbook with bids and asks
  */
@@ -109,25 +112,34 @@ public:
     ~OrderbookFetcher();
     
     /**
-     * @brief Connect to the exchange
+     * @brief Connect to the exchange WebSocket API
      * 
-     * @param exchange_url The exchange websocket URL
-     * @param symbol The trading symbol
-     * @return true if connection was successful
+     * @param exchange_url The WebSocket URL of the exchange
+     * @param symbol The trading symbol to subscribe to
+     * @return true if connection was successful, false otherwise
      */
     bool connect(const std::string& exchange_url, const std::string& symbol);
     
     /**
-     * @brief Disconnect from the exchange
+     * @brief Disconnect from the exchange WebSocket API
      */
     void disconnect();
     
     /**
      * @brief Register a callback for orderbook updates
      * 
-     * @param callback The callback function
+     * @param callback The callback function to register
      */
     void registerCallback(OrderbookCallback callback);
+    
+    /**
+     * @brief Subscribe to an additional data stream
+     * 
+     * @param stream_name The name of the stream to subscribe to
+     * @param callback The callback function to handle stream data
+     * @return true if subscription was successful, false otherwise
+     */
+    bool subscribeToStream(const std::string& stream_name, StreamCallback callback);
     
     /**
      * @brief Get the latest orderbook
@@ -137,9 +149,9 @@ public:
     Orderbook getLatestOrderbook() const;
     
     /**
-     * @brief Get the trading symbol
+     * @brief Get the symbol
      * 
-     * @return The trading symbol
+     * @return The symbol
      */
     std::string getSymbol() const { return symbol_; }
     
@@ -169,6 +181,10 @@ private:
     // Pre-allocated vectors for processing updates
     std::vector<Order> bid_updates_;
     std::vector<Order> ask_updates_;
+    
+    // Map of stream callbacks
+    std::unordered_map<std::string, StreamCallback> stream_callbacks_;
+    std::mutex stream_callbacks_mutex_;
 };
 
 } // namespace trading 
